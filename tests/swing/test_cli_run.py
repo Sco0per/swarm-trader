@@ -85,7 +85,7 @@ def _fake_broker() -> FakeBrokerProvider:
 
 
 def _run_cli(monkeypatch, tmp_path, capsys, *, argv, env, candidates, backend):
-    monkeypatch.setattr(cli_module, "load_scan_inputs", lambda: types.SimpleNamespace(
+    monkeypatch.setattr(cli_module, "load_scan_inputs", lambda **kwargs: types.SimpleNamespace(
         assets=[], bars_by_symbol={}, spy_bars=None, qqq_bars=None, sector_bars={},
     ))
     monkeypatch.setattr(cli_module, "DeterministicSwingScanner", lambda settings: _StubScanner(settings, candidates))

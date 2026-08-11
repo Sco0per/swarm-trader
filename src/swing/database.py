@@ -22,7 +22,7 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -35,7 +35,7 @@ def _turso_serverless():
     return turso_serverless
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 DDL = """
@@ -323,6 +323,11 @@ CREATE TABLE IF NOT EXISTS system_state (
     updated_at TEXT NOT NULL,
     updated_by TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS earnings_cache (
+    symbol TEXT PRIMARY KEY,
+    trading_days INTEGER,
+    updated_at TEXT NOT NULL
+);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_submitted_intent
     ON execution_events(intent_id) WHERE event_type = 'ORDER_SUBMITTED';
 CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_reserved_intent
@@ -418,6 +423,37 @@ class SwingDatabase:
         with self.connect() as connection:
             row = connection.execute("SELECT value_json FROM system_state WHERE key=?", (key,)).fetchone()
         return json.loads(row["value_json"]) if row else default
+
+    def get_earnings_cache_many(self, symbols: list[str], ttl_seconds: int) -> dict[str, int | None]:
+        """Bulk-read fresh earnings-lookup cache entries, hosted so they survive across routine runs.
+
+        One round trip for the whole batch rather than one per symbol -- this
+        table exists specifically so a cloud routine's fresh-sandbox restart
+        doesn't re-pay the same slow yfinance lookups every run. See
+        docs/CRON_AGENTS.md and data_feed.fetch_earnings_trading_days_batch.
+        """
+        if not symbols:
+            return {}
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)).isoformat()
+        placeholders = ",".join("?" for _ in symbols)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"SELECT symbol, trading_days FROM earnings_cache WHERE updated_at >= ? AND symbol IN ({placeholders})",
+                (cutoff, *symbols),
+            ).fetchall()
+        return {row["symbol"]: (int(row["trading_days"]) if row["trading_days"] is not None else None) for row in rows}
+
+    def set_earnings_cache_many(self, entries: list[tuple[str, int | None]]) -> None:
+        if not entries:
+            return
+        now = _now()
+        with self.connect() as connection:
+            for symbol, trading_days in entries:
+                connection.execute(
+                    """INSERT INTO earnings_cache(symbol, trading_days, updated_at) VALUES(?,?,?)
+                       ON CONFLICT(symbol) DO UPDATE SET trading_days=excluded.trading_days, updated_at=excluded.updated_at""",
+                    (symbol, trading_days, now),
+                )
 
     def record_candidate(self, candidate: SwingCandidate, disposition: str = "EVALUATED", rejection_reason: str | None = None) -> None:
         payload = candidate.model_dump(mode="json")

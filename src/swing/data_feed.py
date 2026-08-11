@@ -17,6 +17,17 @@ failed lookup returns ``None``, and ``market.py`` treats an unknown earnings
 date as a scoring exclusion (not a crash) -- see the ``event_fraction``
 calculation there.
 
+Per-symbol lookups run concurrently under one shared
+``EARNINGS_LOOKUP_TIMEOUT_SECONDS`` deadline (see
+``fetch_earnings_trading_days_batch``) rather than sequentially each paying
+their own timeout -- with ~200 stock symbols in the universe, sequential
+lookups turned an 8-second worst case per symbol into a ~20-minute scan when
+Yahoo was blocking (or hanging on) most of them. Results are also cached in
+the hosted Turso database when one is passed in, so a fresh cloud-routine
+sandbox later the same day can skip the network call entirely instead of
+re-paying it every run -- the local disk cache below only helps within a
+single process.
+
 Known limitation (documented, not silently papered over): there is no free,
 reliable halt-status feed, so ``UniverseAsset.is_halted`` always defaults to
 ``False`` here. This matches the gap already called out in
@@ -33,12 +44,16 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 import requests
 
 from .market import SECTOR_ETFS, UniverseAsset
 from .universe import UNIVERSE, UniverseEntry
+
+if TYPE_CHECKING:
+    from .database import SwingDatabase
 
 CACHE_DIR = Path(__file__).resolve().parents[2] / ".cache" / "swing_data_feed"
 BAR_CACHE_TTL_SECONDS = 6 * 3600
@@ -198,61 +213,102 @@ def _approx_trading_days_until(target: date, today: date) -> int:
 EARNINGS_LOOKUP_TIMEOUT_SECONDS = 8
 
 
-def fetch_earnings_trading_days(symbol: str) -> int | None:
-    """Approximate trading days until the next known earnings date, or None if unknown.
+def _fetch_earnings_calendar(symbol: str, yf_module, outcomes: dict) -> None:
+    try:
+        outcomes[symbol] = {"calendar": yf_module.Ticker(symbol).get_earnings_dates(limit=4)}
+    except Exception:
+        pass
 
-    Bounded by EARNINGS_LOOKUP_TIMEOUT_SECONDS via a worker thread: yfinance
-    doesn't reliably honor its own timeout when the underlying connection
-    hangs (rather than erroring immediately) instead of failing outright,
-    which turned a single blocked call into a many-minute scan when tried
-    from a cloud environment Yahoo was throttling. A slow, silent hang is
-    worse than a fast None here -- the caller already treats both the same.
-    """
-    cached = _cache_get("earnings", symbol, EARNINGS_CACHE_TTL_SECONDS)
-    if cached is not None:
-        return cached.get("trading_days")
-    yf = _yf()
 
-    outcome: dict = {}
-
-    def _lookup():
-        try:
-            outcome["calendar"] = yf.Ticker(symbol).get_earnings_dates(limit=4)
-        except Exception:
-            pass
-
-    thread = threading.Thread(target=_lookup, daemon=True)
-    thread.start()
-    thread.join(timeout=EARNINGS_LOOKUP_TIMEOUT_SECONDS)
-    if "calendar" not in outcome:
-        # Either it raised or it's still hung past the deadline -- the thread
-        # is daemonized so an abandoned hang won't block process exit.
-        _cache_set("earnings", symbol, {"trading_days": None})
-        return None
-    calendar = outcome["calendar"]
+def _trading_days_from_calendar(calendar, today: date) -> int | None:
     index = getattr(calendar, "index", None)
     if calendar is None or index is None or len(index) == 0:
-        _cache_set("earnings", symbol, {"trading_days": None})
         return None
-    today = datetime.now(timezone.utc).date()
     upcoming = [
         (idx.date() if hasattr(idx, "date") else idx)
         for idx in index
         if (idx.date() if hasattr(idx, "date") else idx) >= today
     ]
     if not upcoming:
-        _cache_set("earnings", symbol, {"trading_days": None})
         return None
-    trading_days = _approx_trading_days_until(min(upcoming), today)
-    _cache_set("earnings", symbol, {"trading_days": trading_days})
-    return trading_days
+    return _approx_trading_days_until(min(upcoming), today)
 
 
-def build_universe_assets(entries: list[UniverseEntry] | None = None) -> list[UniverseAsset]:
+def fetch_earnings_trading_days_batch(symbols: list[str], database: "SwingDatabase | None" = None) -> dict[str, int | None]:
+    """Resolve trading-days-to-next-earnings for many symbols within one shared timeout window.
+
+    Checked cheapest-first: the hosted Turso cache (survives across routine
+    runs/days), the local disk cache (survives within this process only),
+    then yfinance. Remaining symbols are looked up concurrently -- one daemon
+    thread per symbol, all started together and joined against a single
+    shared deadline -- so the whole batch costs at most
+    EARNINGS_LOOKUP_TIMEOUT_SECONDS once, not multiplied by len(symbols).
+    Threads still running past the deadline are abandoned (daemonized, same
+    as the previous per-symbol design) rather than awaited.
+    """
+    results: dict[str, int | None] = {}
+    remaining = list(dict.fromkeys(symbols))
+
+    if database is not None and remaining:
+        try:
+            hosted = database.get_earnings_cache_many(remaining, EARNINGS_CACHE_TTL_SECONDS)
+        except Exception:
+            hosted = {}
+        results.update(hosted)
+        remaining = [symbol for symbol in remaining if symbol not in results]
+
+    still_remaining: list[str] = []
+    for symbol in remaining:
+        cached = _cache_get("earnings", symbol, EARNINGS_CACHE_TTL_SECONDS)
+        if cached is not None:
+            results[symbol] = cached.get("trading_days")
+        else:
+            still_remaining.append(symbol)
+
+    if still_remaining:
+        yf = _yf()
+        outcomes: dict[str, dict] = {}
+        threads = [
+            threading.Thread(target=_fetch_earnings_calendar, args=(symbol, yf, outcomes), daemon=True)
+            for symbol in still_remaining
+        ]
+        for thread in threads:
+            thread.start()
+        deadline = time.monotonic() + EARNINGS_LOOKUP_TIMEOUT_SECONDS
+        for thread in threads:
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+
+        today = datetime.now(timezone.utc).date()
+        freshly_resolved: list[tuple[str, int | None]] = []
+        for symbol in still_remaining:
+            outcome = outcomes.get(symbol)
+            trading_days = _trading_days_from_calendar(outcome["calendar"], today) if outcome else None
+            results[symbol] = trading_days
+            freshly_resolved.append((symbol, trading_days))
+            _cache_set("earnings", symbol, {"trading_days": trading_days})
+
+        if database is not None:
+            try:
+                database.set_earnings_cache_many(freshly_resolved)
+            except Exception:
+                pass
+
+    return results
+
+
+def fetch_earnings_trading_days(symbol: str, database: "SwingDatabase | None" = None) -> int | None:
+    """Single-symbol convenience wrapper around fetch_earnings_trading_days_batch."""
+    return fetch_earnings_trading_days_batch([symbol], database=database).get(symbol)
+
+
+def build_universe_assets(
+    entries: list[UniverseEntry] | None = None, database: "SwingDatabase | None" = None,
+) -> list[UniverseAsset]:
     entries = entries if entries is not None else UNIVERSE
+    stock_symbols = [entry.symbol for entry in entries if not entry.is_etf]
+    earnings_by_symbol = fetch_earnings_trading_days_batch(stock_symbols, database=database) if stock_symbols else {}
     assets: list[UniverseAsset] = []
     for entry in entries:
-        earnings_days = None if entry.is_etf else fetch_earnings_trading_days(entry.symbol)
         assets.append(UniverseAsset(
             symbol=entry.symbol,
             sector=entry.sector,
@@ -260,7 +316,7 @@ def build_universe_assets(entries: list[UniverseEntry] | None = None) -> list[Un
             is_tradable=True,
             is_halted=False,
             is_leveraged_or_inverse=False,
-            earnings_trading_days=earnings_days,
+            earnings_trading_days=None if entry.is_etf else earnings_by_symbol.get(entry.symbol),
         ))
     return assets
 
@@ -274,7 +330,9 @@ class ScanInputs:
     sector_bars: dict[str, pd.DataFrame]
 
 
-def load_scan_inputs(*, entries: list[UniverseEntry] | None = None, lookback_days: int = 320) -> ScanInputs:
+def load_scan_inputs(
+    *, entries: list[UniverseEntry] | None = None, lookback_days: int = 320, database: "SwingDatabase | None" = None,
+) -> ScanInputs:
     """Fetch everything DeterministicSwingScanner.scan() needs, in one call."""
     entries = entries if entries is not None else UNIVERSE
     symbols = sorted({entry.symbol for entry in entries} | {"SPY", "QQQ"} | set(SECTOR_ETFS.values()))
@@ -284,7 +342,7 @@ def load_scan_inputs(*, entries: list[UniverseEntry] | None = None, lookback_day
     if spy_bars is None or qqq_bars is None:
         raise RuntimeError("SPY/QQQ bars are required for regime classification and were not available")
     sector_bars = {etf: bars[etf] for etf in SECTOR_ETFS.values() if etf in bars}
-    assets = build_universe_assets(entries)
+    assets = build_universe_assets(entries, database=database)
     bars_by_symbol = {entry.symbol: bars[entry.symbol] for entry in entries if entry.symbol in bars}
     return ScanInputs(
         assets=assets, bars_by_symbol=bars_by_symbol, spy_bars=spy_bars, qqq_bars=qqq_bars, sector_bars=sector_bars,

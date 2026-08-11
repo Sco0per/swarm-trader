@@ -135,7 +135,7 @@ def main() -> int:
         )
         print(order.model_dump_json(indent=2))
     elif args.command == "scan":
-        inputs = load_scan_inputs()
+        inputs = load_scan_inputs(database=database)
         scanner = DeterministicSwingScanner(settings)
         candidates = scanner.scan(
             inputs.assets, inputs.bars_by_symbol, spy_bars=inputs.spy_bars, qqq_bars=inputs.qqq_bars,
@@ -151,7 +151,7 @@ def main() -> int:
         if settings.execution_mode != "paper":
             raise ValueError("run currently supports EXECUTION_MODE=paper only")
         broker = AlpacaPaperProvider(os.getenv("ALPACA_API_KEY", ""), os.getenv("ALPACA_API_SECRET", ""))
-        inputs = load_scan_inputs()
+        inputs = load_scan_inputs(database=database)
         scanner = DeterministicSwingScanner(settings)
         candidates = scanner.scan(
             inputs.assets, inputs.bars_by_symbol, spy_bars=inputs.spy_bars, qqq_bars=inputs.qqq_bars,

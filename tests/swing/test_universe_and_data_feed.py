@@ -9,6 +9,16 @@ from src.swing.risk import LEVERAGED_OR_INVERSE_ETFS
 from src.swing.universe import UNIVERSE, UNIVERSE_SYMBOLS
 
 
+def test_earnings_cache_round_trips_through_database(database):
+    assert database.get_earnings_cache_many(["AAA", "BBB"], ttl_seconds=86400) == {}
+
+    database.set_earnings_cache_many([("AAA", 7), ("BBB", None)])
+    cached = database.get_earnings_cache_many(["AAA", "BBB", "CCC"], ttl_seconds=86400)
+    assert cached == {"AAA": 7, "BBB": None}
+
+    assert database.get_earnings_cache_many(["AAA"], ttl_seconds=0) == {}
+
+
 def test_universe_excludes_leveraged_and_uses_valid_sectors():
     assert len(UNIVERSE_SYMBOLS) == len(set(UNIVERSE_SYMBOLS))
     assert not (set(UNIVERSE_SYMBOLS) & LEVERAGED_OR_INVERSE_ETFS)
@@ -96,16 +106,110 @@ def test_fetch_earnings_trading_days_none_when_unavailable(monkeypatch, tmp_path
     assert data_feed.fetch_earnings_trading_days("AAA") is None
 
 
-def test_build_universe_assets_marks_etfs_without_earnings_lookup(monkeypatch, tmp_path):
+def test_fetch_earnings_trading_days_batch_runs_concurrently(monkeypatch, tmp_path):
+    """N symbols should cost ~one lookup's wall time, not N times it."""
+    monkeypatch.setattr(data_feed, "CACHE_DIR", tmp_path)
+    future = pd.Timestamp.now("UTC").normalize() + pd.Timedelta(days=10)
+    delay_seconds = 0.2
+    symbols = [f"SYM{i}" for i in range(8)]
+
+    class _SlowTicker:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        def get_earnings_dates(self, limit=4):
+            import time as _time
+
+            _time.sleep(delay_seconds)
+            return pd.DataFrame(index=pd.DatetimeIndex([future]))
+
+    class _FakeYF:
+        def Ticker(self, symbol):
+            return _SlowTicker(symbol)
+
+    monkeypatch.setattr(data_feed, "_yf", lambda: _FakeYF())
+    import time
+
+    started = time.monotonic()
+    results = data_feed.fetch_earnings_trading_days_batch(symbols)
+    elapsed = time.monotonic() - started
+
+    assert set(results) == set(symbols)
+    assert all(0 < days <= 10 for days in results.values())
+    assert elapsed < delay_seconds * len(symbols)
+
+
+def test_fetch_earnings_trading_days_batch_uses_turso_cache_and_skips_lookup(monkeypatch, tmp_path):
     monkeypatch.setattr(data_feed, "CACHE_DIR", tmp_path)
 
     def _boom(symbol):
+        raise AssertionError("cache hit should not call yfinance")
+
+    monkeypatch.setattr(data_feed, "_yf", _boom)
+
+    class _FakeDatabase:
+        def get_earnings_cache_many(self, symbols, ttl_seconds):
+            return {"AAA": 5}
+
+        def set_earnings_cache_many(self, entries):
+            raise AssertionError("nothing should need writing back on a full cache hit")
+
+    results = data_feed.fetch_earnings_trading_days_batch(["AAA"], database=_FakeDatabase())
+    assert results == {"AAA": 5}
+
+
+def test_fetch_earnings_trading_days_batch_survives_turso_errors(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_feed, "CACHE_DIR", tmp_path)
+    future = pd.Timestamp.now("UTC").normalize() + pd.Timedelta(days=3)
+
+    class _FakeYF:
+        def Ticker(self, symbol):
+            return _FakeTicker(symbol, earnings_index=pd.DatetimeIndex([future]))
+
+    monkeypatch.setattr(data_feed, "_yf", lambda: _FakeYF())
+
+    class _BrokenDatabase:
+        def get_earnings_cache_many(self, symbols, ttl_seconds):
+            raise RuntimeError("Turso unreachable")
+
+        def set_earnings_cache_many(self, entries):
+            raise RuntimeError("Turso unreachable")
+
+    results = data_feed.fetch_earnings_trading_days_batch(["AAA"], database=_BrokenDatabase())
+    assert results["AAA"] is not None
+
+
+def test_build_universe_assets_marks_etfs_without_earnings_lookup(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_feed, "CACHE_DIR", tmp_path)
+
+    def _boom(symbols, database=None):
         raise AssertionError("ETFs must not trigger an earnings lookup")
 
-    monkeypatch.setattr(data_feed, "fetch_earnings_trading_days", _boom)
+    monkeypatch.setattr(data_feed, "fetch_earnings_trading_days_batch", _boom)
     from src.swing.universe import UniverseEntry
 
     assets = data_feed.build_universe_assets([UniverseEntry(symbol="SPY", sector="Unknown", is_etf=True)])
     assert assets[0].is_etf is True
     assert assets[0].earnings_trading_days is None
     assert assets[0].is_halted is False
+
+
+def test_build_universe_assets_passes_database_through_for_stocks(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_feed, "CACHE_DIR", tmp_path)
+    seen: dict = {}
+
+    def _fake_batch(symbols, database=None):
+        seen["symbols"] = symbols
+        seen["database"] = database
+        return {symbol: None for symbol in symbols}
+
+    monkeypatch.setattr(data_feed, "fetch_earnings_trading_days_batch", _fake_batch)
+    from src.swing.universe import UniverseEntry
+
+    sentinel_database = object()
+    entries = [UniverseEntry(symbol="AAA", sector="Technology", is_etf=False)]
+    assets = data_feed.build_universe_assets(entries, database=sentinel_database)
+
+    assert seen["symbols"] == ["AAA"]
+    assert seen["database"] is sentinel_database
+    assert assets[0].earnings_trading_days is None
