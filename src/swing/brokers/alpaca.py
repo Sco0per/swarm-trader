@@ -84,7 +84,14 @@ class AlpacaPaperProvider(BrokerProvider):
         clock = self._request("GET", f"{self.TRADING_BASE}/clock")
         if not bool(clock.get("is_open", False)):
             return {"approved": False, "reason": "market is closed", "clock": clock}
-        return {"approved": True, "estimated_cost": intent.quantity * intent.limit_price, "paper_only": True}
+        return {
+            "approved": True,
+            "market_open": True,
+            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+            "estimated_cost": intent.quantity * intent.limit_price,
+            "paper_only": True,
+            "clock": clock,
+        }
 
     def place_order(self, intent: OrderIntent) -> BrokerOrder:
         payload = {

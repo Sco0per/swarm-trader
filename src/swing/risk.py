@@ -138,6 +138,11 @@ REASON_CODES = {
     "stale_market_data": "REJECT_STALE_DATA",
     "stale_candidate": "REJECT_STALE_DATA",
     "stale_account": "REJECT_STALE_DATA",
+    "stale_asset_state": "REJECT_STALE_DATA",
+    "stale_event_data": "REJECT_STALE_DATA",
+    "stale_earnings_data": "REJECT_STALE_DATA",
+    "incomplete_daily_bar": "REJECT_STALE_DATA",
+    "market_data_missing": "REJECT_STALE_DATA",
     "spread_unavailable": "REJECT_WIDE_SPREAD",
     "spread_too_wide": "REJECT_WIDE_SPREAD",
     "invalid_stop": "REJECT_SETUP_INVALID",
@@ -334,6 +339,9 @@ class SwingRiskManager:
                 return self.reject("asset_not_tradable", f"Broker reports unsupported or inactive asset {symbol}", proposal, intent_id, candidate=candidate, computed_values=computed)
             if asset.is_leveraged_or_inverse is True:
                 return self.reject("banned_instrument", f"Broker classifies {symbol} as leveraged or inverse", proposal, intent_id, candidate=candidate, computed_values=computed)
+            asset_age = (datetime.now(timezone.utc) - asset.retrieved_at).total_seconds()
+            if asset_age < 0 or asset_age > settings.broker_asset_freshness_seconds:
+                return self.reject("stale_asset_state", "Broker asset state is stale or future-dated", proposal, intent_id, candidate=candidate, computed_values=computed)
 
         if bool(self.database.get_state("kill_switch", False)):
             return self.reject("kill_switch", "Global kill switch is active", proposal, intent_id, candidate=candidate, computed_values=computed)
@@ -377,6 +385,10 @@ class SwingRiskManager:
             return self.reject("spread_unavailable", "A current bid/ask spread is required", proposal, intent_id, candidate=candidate, computed_values=computed)
         if quote.spread_pct > settings.maximum_spread_pct:
             return self.reject("spread_too_wide", f"Spread {quote.spread_pct:.3%} exceeds limit", proposal, intent_id, candidate=candidate, computed_values=computed)
+        if quote.market_timestamp is None or candidate.data.market_timestamp is None:
+            return self.reject("market_data_missing", "Quote and completed daily-bar market timestamps are required", proposal, intent_id, candidate=candidate, computed_values=computed)
+        if not candidate.completed_daily_bar:
+            return self.reject("incomplete_daily_bar", "A completed daily bar is required for this swing setup", proposal, intent_id, candidate=candidate, computed_values=computed)
 
         future_tolerance = 5.0
         timestamps = {
@@ -399,6 +411,11 @@ class SwingRiskManager:
 
         if candidate.major_event_status != "clear":
             return self.reject("event_data_invalid", f"Major corporate-event status is {candidate.major_event_status}; structured coverage must be clear", proposal, intent_id, candidate=candidate, computed_values=computed)
+        if candidate.major_event_retrieved_at is None:
+            return self.reject("stale_event_data", "Corporate-event freshness timestamp is unavailable", proposal, intent_id, candidate=candidate, computed_values=computed)
+        event_age = (now - candidate.major_event_retrieved_at).total_seconds()
+        if event_age < 0 or event_age > settings.corporate_event_freshness_seconds:
+            return self.reject("stale_event_data", "Corporate-event data is stale or future-dated", proposal, intent_id, candidate=candidate, computed_values=computed)
         if not candidate.is_etf:
             if candidate.earnings_data_status != "clear":
                 return self.reject("earnings_unknown", f"Earnings data status is {candidate.earnings_data_status}", proposal, intent_id, candidate=candidate, computed_values=computed)
@@ -406,6 +423,11 @@ class SwingRiskManager:
                 return self.reject("earnings_unknown", "Earnings data is unavailable or malformed", proposal, intent_id, candidate=candidate, computed_values=computed)
             if candidate.earnings_trading_days <= settings.earnings_exclusion_trading_days:
                 return self.reject("earnings_exclusion", f"Earnings are expected within {settings.earnings_exclusion_trading_days} trading days", proposal, intent_id, candidate=candidate, computed_values=computed)
+            if candidate.earnings_retrieved_at is None:
+                return self.reject("stale_earnings_data", "Earnings freshness timestamp is unavailable", proposal, intent_id, candidate=candidate, computed_values=computed)
+            earnings_age = (now - candidate.earnings_retrieved_at).total_seconds()
+            if earnings_age < 0 or earnings_age > settings.earnings_freshness_seconds:
+                return self.reject("stale_earnings_data", "Earnings data is stale or future-dated", proposal, intent_id, candidate=candidate, computed_values=computed)
 
         if proposal.setup_type != candidate.setup_type or candidate.validator_failures:
             return self.reject("setup_mismatch", "Proposal does not match a hard-valid deterministic setup", proposal, intent_id, candidate=candidate, computed_values=computed)
@@ -429,8 +451,8 @@ class SwingRiskManager:
         computed.update(authoritative_stop=stop, authoritative_target=target, risk_per_share=risk_per_share, current_rr=current_rr)
         if current_rr < settings.minimum_rr:
             return self.reject("minimum_rr", f"Current structural reward/risk {current_rr:.2f} is below {settings.minimum_rr:.2f}", proposal, intent_id, candidate=candidate, computed_values=computed)
-        if quote.last > candidate.price + 0.25 * (candidate.price - stop):
-            return self.reject("chasing_entry", "Current quote has moved more than 0.25R above the deterministic entry", proposal, intent_id, candidate=candidate, computed_values=computed)
+        if quote.last > candidate.price + settings.maximum_entry_slippage_r * (candidate.price - stop):
+            return self.reject("chasing_entry", f"Current quote has moved more than {settings.maximum_entry_slippage_r:.2f}R above the deterministic entry", proposal, intent_id, candidate=candidate, computed_values=computed)
 
         existing_symbols = {position.symbol.upper() for position in portfolio.positions if position.quantity != 0}
         existing_symbols.update(open_risk["risk_by_position"])

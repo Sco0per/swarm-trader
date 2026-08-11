@@ -64,6 +64,11 @@ class HumanSuppliedBrokerProvider(BrokerProvider):
         self._open_orders = list(snapshot.get("open_orders", []))
         asset = snapshot.get("asset", {})
         quote = snapshot["quote"]
+        market = snapshot.get("market") or {}
+        if market.get("is_open") is not True or not market.get("retrieved_at"):
+            raise ValueError("snapshot['market'] must explicitly confirm is_open=true with a freshness timestamp")
+        self._market_open = True
+        self._market_reviewed_at = datetime.fromisoformat(market["retrieved_at"])
         self._asset = BrokerAsset(
             symbol=(asset.get("symbol") or quote["symbol"]).upper(),
             asset_class=asset.get("asset_class", "us_equity"),
@@ -71,6 +76,7 @@ class HumanSuppliedBrokerProvider(BrokerProvider):
             status=asset.get("status", "active"),
             marginable=asset.get("marginable"),
             is_leveraged_or_inverse=asset.get("is_leveraged_or_inverse", False),
+            retrieved_at=datetime.fromisoformat(asset.get("retrieved_at") or quote["retrieved_at"]),
         )
         self._quote = Quote(
             symbol=quote["symbol"].upper(),
@@ -115,6 +121,8 @@ class HumanSuppliedBrokerProvider(BrokerProvider):
         # Purely informational -- a human, not this code, decides whether to execute.
         return {
             "approved": intent.side == "buy" and intent.stop_price < intent.limit_price < intent.target_price,
+            "market_open": self._market_open,
+            "reviewed_at": self._market_reviewed_at.isoformat(),
             "estimated_cost": intent.quantity * intent.limit_price,
             "note": "This is a computed ticket only. No order was reviewed by or sent to Robinhood.",
         }

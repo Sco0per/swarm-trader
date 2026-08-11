@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .config import SwingSettings
 from .database import SwingDatabase
-from .models import Decision, MarketRegime, SetupType, SwingCandidate, TradeProposal
+from .models import Decision, LLMReviewDecision, MarketRegime, SetupType, SwingCandidate, TradeProposal
 
 
 class TechnicalSwingAnalysis(BaseModel):
@@ -29,13 +29,6 @@ class FundamentalEventAnalysis(BaseModel):
     material_events: list[str] = Field(default_factory=list)
     fundamental_context: str
     data_gaps: list[str] = Field(default_factory=list)
-
-
-class BullAnalysis(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    strongest_evidence: list[str]
-    thesis: str
-    confidence: float = Field(ge=0, le=100)
 
 
 class BearAnalysis(BaseModel):
@@ -62,7 +55,7 @@ class BearAnalysis(BaseModel):
 class PMStructuredDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ticker: str
-    decision: Decision
+    decision: LLMReviewDecision
     setup_type: SetupType
     confidence_score: float = Field(ge=0, le=100)
     market_regime: MarketRegime
@@ -101,7 +94,7 @@ class AgentPipeline:
         models = self.settings.models
         if role in {"technical", "fundamental"}:
             selected = models.analyst_model
-        elif role in {"bull", "bear", "portfolio_manager"}:
+        elif role in {"bear", "portfolio_manager"}:
             selected = models.portfolio_manager_model
         else:
             selected = None
@@ -161,24 +154,63 @@ class AgentPipeline:
         # A model never gets to review a hard-failed or watchlist-only setup.
         screened = [candidate for candidate in candidates if candidate.score_route in {"strong", "very_strong"} and not candidate.validator_failures]
         screened.sort(key=lambda candidate: (candidate.score_route != "very_strong", -candidate.score, candidate.ticker))
-        finalists: list[tuple[SwingCandidate, TechnicalSwingAnalysis, FundamentalEventAnalysis, BullAnalysis, BearAnalysis]] = []
+        finalists: list[tuple[SwingCandidate, TechnicalSwingAnalysis, FundamentalEventAnalysis, BearAnalysis]] = []
         for candidate in screened[: self.settings.maximum_scanner_candidates]:
-            base = {"candidate": candidate.model_dump(mode="json"), "instruction": "Use only supplied data; identify unknowns explicitly."}
+            identity = {
+                "ticker": candidate.ticker,
+                "setup_type": candidate.setup_type.value,
+                "score": candidate.score,
+                "market_regime": candidate.market_regime.value,
+                "sector": candidate.sector,
+            }
+            technical_context = {
+                **identity,
+                "price": candidate.price,
+                "atr": candidate.atr,
+                "support": candidate.support,
+                "resistance": candidate.resistance,
+                "moving_averages": {"ma20": candidate.ma20, "ma50": candidate.ma50, "ma200": candidate.ma200},
+                "relative_strength": {
+                    "vs_spy": candidate.stock_relative_strength_spy,
+                    "vs_sector": candidate.stock_relative_strength_sector,
+                },
+                "volume_ratio": candidate.volume_ratio,
+                "validator_features": candidate.validator_features,
+            }
+            catalyst_context = {
+                **identity,
+                "earnings_trading_days": candidate.earnings_trading_days,
+                "earnings_data_status": candidate.earnings_data_status,
+                "major_event_status": candidate.major_event_status,
+            }
             try:
-                technical = self._call("technical", candidate, base, TechnicalSwingAnalysis)
-                fundamental = self._call("fundamental", candidate, base, FundamentalEventAnalysis)
+                technical = self._call(
+                    "technical",
+                    candidate,
+                    {"candidate": technical_context, "instruction": "Find technical contradictions and invalidation risks; identify unknowns explicitly."},
+                    TechnicalSwingAnalysis,
+                )
+                fundamental = self._call(
+                    "fundamental",
+                    candidate,
+                    {
+                        "candidate": catalyst_context,
+                        "instruction": (
+                            "Act as the catalyst/fundamental analyst. Look for earnings, guidance, offerings, dilution, corporate actions, lawsuits, regulation, acquisitions, FDA events, executive departures, sector news, macro catalysts, and abnormal headline risk. Missing evidence is a data gap."
+                        ),
+                    },
+                    FundamentalEventAnalysis,
+                )
                 if not technical.setup_valid or fundamental.has_blocking_event_risk or fundamental.data_gaps:
                     continue
-                bull = self._call("bull", candidate, {**base, "technical": technical.model_dump(), "fundamental": fundamental.model_dump()}, BullAnalysis)
                 known_lessons = [{"description": lesson["description"], "confidence": lesson["confidence"]} for lesson in self.database.validated_lessons_for(candidate.setup_type.value, candidate.market_regime.value)]
                 bear = self._call(
                     "bear",
                     candidate,
                     {
-                        **base,
+                        "candidate": identity,
                         "technical": technical.model_dump(),
                         "fundamental": fundamental.model_dump(),
-                        "bull": bull.model_dump(),
                         "known_lessons": known_lessons,
                         "instruction": ("Act independently and kill weak, extended, event-exposed, or rationalized trades. " "Answer every named checklist field explicitly. If known_lessons describes a validated " "failure pattern this trade matches, set repeats_known_bad_pattern=true and kill_trade=true."),
                     },
@@ -186,29 +218,36 @@ class AgentPipeline:
                 )
                 if bear.kill_trade:
                     continue
-                finalists.append((candidate, technical, fundamental, bull, bear))
+                finalists.append((candidate, technical, fundamental, bear))
             except (ModelUnavailable, ValueError, TypeError, RuntimeError):
                 continue
 
         proposals: list[TradeProposal] = []
-        for candidate, technical, fundamental, bull, bear in finalists[: self.settings.maximum_pm_candidates]:
+        for candidate, technical, fundamental, bear in finalists[: self.settings.maximum_pm_candidates]:
             payload = {
-                "candidate": candidate.model_dump(mode="json"),
+                "candidate": {
+                    "ticker": candidate.ticker,
+                    "setup_type": candidate.setup_type.value,
+                    "score": candidate.score,
+                    "market_regime": candidate.market_regime.value,
+                    "sector": candidate.sector,
+                },
                 "technical": technical.model_dump(),
                 "fundamental": fundamental.model_dump(),
-                "bull": bull.model_dump(),
                 "bear": bear.model_dump(),
-                "allowed_decisions": [decision.value for decision in Decision],
-                "constraints": "Python owns entry, stop, target, quantity, and every limit. NO_TRADE is acceptable.",
+                "allowed_decisions": [decision.value for decision in LLMReviewDecision],
+                "constraints": "This is advisory only. Python owns entry, stop, target, quantity, risk, execution, and every limit. APPROVE does not authorize execution.",
             }
             try:
                 pm = self._call("portfolio_manager", candidate, payload, PMStructuredDecision)
-                if pm.decision != Decision.BUY:
+                if pm.ticker.strip().upper() != candidate.ticker or pm.setup_type != candidate.setup_type or pm.market_regime != candidate.market_regime:
+                    raise ValueError("Portfolio reviewer identity/setup/regime does not match deterministic candidate")
+                if pm.decision != LLMReviewDecision.APPROVE:
                     continue
                 proposals.append(
                     TradeProposal(
                         ticker=pm.ticker,
-                        decision=pm.decision,
+                        decision=Decision.BUY,
                         setup_type=pm.setup_type,
                         entry=candidate.price,
                         stop=candidate.structural_invalidation,

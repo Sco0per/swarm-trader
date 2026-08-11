@@ -53,6 +53,9 @@ def main() -> int:
     clear.add_argument("--approved-by", required=True)
     clear_losses = sub.add_parser("clear-loss-streak-halt", help="Record explicit human approval after loss-streak review")
     clear_losses.add_argument("--approved-by", required=True)
+    acknowledge_reconciliation = sub.add_parser("ack-reconciliation", help="Clear a latched reconciliation halt after a clean reconciliation")
+    acknowledge_reconciliation.add_argument("--approved-by", required=True)
+    acknowledge_reconciliation.add_argument("--reason", required=True)
     approve = sub.add_parser("approve-strategy", help="Human-only candidate promotion")
     approve.add_argument("hypothesis_id")
     approve.add_argument("--approved-by", required=True)
@@ -119,6 +122,9 @@ def main() -> int:
         database.set_state("loss_streak_halt", False, args.approved_by)
         database.set_state("loss_streak_review_approval", {"approved_by": args.approved_by}, args.approved_by)
         print("Consecutive-loss halt cleared by explicit human approval.")
+    elif args.command == "ack-reconciliation":
+        database.acknowledge_reconciliation_halt(acknowledged_by=args.approved_by, reason=args.reason)
+        print("Reconciliation halt cleared after clean broker truth and explicit human acknowledgement.")
     elif args.command == "approve-strategy":
         print(database.approve_candidate_strategy(args.hypothesis_id, args.approved_by))
     elif args.command == "paper-review":

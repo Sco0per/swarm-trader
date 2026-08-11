@@ -12,14 +12,18 @@ from pydantic import BaseModel
 from .brokers.base import BrokerProvider
 from .config import SwingSettings
 from .database import SwingDatabase
+from .lifecycle import PositionLifecycleService
 from .models import (
     BrokerOrder,
     OrderIntent,
     PortfolioRiskState,
     RiskDecision,
     SwingCandidate,
+    TechnicalThesis,
+    TradeThesis,
     TradeProposal,
 )
+from .protection import ProtectionEvidence, verify_broker_bracket
 from .reconciliation import BrokerReconciler
 from .risk import SwingRiskManager
 
@@ -42,6 +46,7 @@ class SwingExecutionService:
         self.database = database
         self.broker = broker
         self.risk_manager = SwingRiskManager(settings, database)
+        self.lifecycle = PositionLifecycleService(settings, database)
 
     @staticmethod
     def intent_id(proposal: TradeProposal) -> str:
@@ -161,6 +166,15 @@ class SwingExecutionService:
             return self._broker_rejection(intent, risk, "BROKER_REVIEW_FAILED", str(exc))
         if not review.get("approved", False):
             return self._broker_rejection(intent, risk, "BROKER_REVIEW_REJECTED", str(review.get("reason", "broker rejected review")), review)
+        try:
+            reviewed_at = datetime.fromisoformat(str(review["reviewed_at"]).replace("Z", "+00:00"))
+            review_age = (datetime.now(timezone.utc) - reviewed_at).total_seconds()
+        except (KeyError, TypeError, ValueError):
+            return self._broker_rejection(intent, risk, "MARKET_CLOCK_UNAVAILABLE", "Broker market-clock freshness is unavailable", review)
+        if review.get("market_open") is not True:
+            return self._broker_rejection(intent, risk, "MARKET_CLOSED", "Broker reports that the market is closed", review)
+        if review_age < 0 or review_age > self.settings.market_clock_freshness_seconds:
+            return self._broker_rejection(intent, risk, "MARKET_CLOCK_STALE", "Broker market-clock review is stale or future-dated", review)
 
         self.database.record_execution_event(
             intent_id=intent_id,
@@ -198,6 +212,7 @@ class SwingExecutionService:
             status="SUBMITTED",
             broker_order_id=None,
         )
+        thesis = self._trade_thesis(proposal=proposal, candidate=candidate, risk=risk, entry_price=quote.last)
         now_et = datetime.now(ZoneInfo("America/New_York"))
         day_start = now_et.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
         week_start = (now_et.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now_et.weekday())).astimezone(timezone.utc).isoformat()
@@ -212,6 +227,7 @@ class SwingExecutionService:
                 "trade": draft,
                 "proposal": proposal.model_dump(mode="json"),
                 "candidate": candidate.model_dump(mode="json"),
+                "thesis": thesis.model_dump(mode="json"),
                 "cluster": self.risk_manager.clusters.get(proposal.ticker.upper()),
             },
             day_start_iso=day_start,
@@ -322,7 +338,13 @@ class SwingExecutionService:
                 message=f"Unexpected broker status {broker_status}; reconciliation is mandatory",
             )
 
-        status = "PARTIALLY_FILLED" if broker_status in {"partially_filled", "partial_fill"} else "SUBMITTED"
+        protection = verify_broker_bracket(intent, order)
+        if broker_status in {"partially_filled", "partial_fill"}:
+            status = "PARTIALLY_FILLED"
+        elif broker_status == "filled" or order.filled_quantity >= order.quantity > 0:
+            status = "OPEN"
+        else:
+            status = "SUBMITTED"
         stored_trade = self._trade_values(
             trade_id=trade_id,
             proposal=proposal,
@@ -336,13 +358,26 @@ class SwingExecutionService:
             broker_order_id=order.broker_order_id,
         )
         try:
-            self.database.add_trade(stored_trade)
+            self.database.add_trade_with_thesis(stored_trade, thesis)
             self.database.update_admission(
                 intent_id,
                 "SUBMITTED",
                 trade_id=trade_id,
                 broker_order_id=order.broker_order_id,
             )
+            if order.filled_quantity > 0:
+                self.lifecycle.create_open(trade_id, current_stop=risk.authoritative_stop, trigger="broker_submission_fill")
+                if protection.protected:
+                    self.lifecycle.mark_protected(trade_id, evidence=protection.model_dump(mode="json"))
+                else:
+                    return self._remediate_protection_failure(
+                        trade_id=trade_id,
+                        intent=intent,
+                        risk=risk,
+                        review=review,
+                        order=order,
+                        protection=protection,
+                    )
         except Exception as exc:
             self.database.update_admission(intent_id, "UNKNOWN", broker_order_id=order.broker_order_id)
             self.database.set_state("reconciliation_halt", True, "execution_persistence_failure")
@@ -386,6 +421,83 @@ class SwingExecutionService:
             broker_order=order,
             trade_id=trade_id,
             message="Order submitted once and persisted for reconciliation",
+        )
+
+    def _trade_thesis(
+        self,
+        *,
+        proposal: TradeProposal,
+        candidate: SwingCandidate,
+        risk: RiskDecision,
+        entry_price: float,
+    ) -> TradeThesis:
+        if risk.authoritative_stop is None:
+            raise ValueError("Cannot build a thesis without an authoritative stop")
+        risk_per_share = entry_price - risk.authoritative_stop
+        return TradeThesis(
+            ticker=proposal.ticker,
+            setup=proposal.setup_type,
+            entry=entry_price,
+            initial_stop=risk.authoritative_stop,
+            initial_target=candidate.resistance,
+            initial_risk_dollars=risk.planned_dollar_risk,
+            initial_risk_per_share=risk_per_share,
+            initial_rr=risk.planned_rr,
+            entry_score=candidate.score,
+            market_regime=candidate.market_regime.value,
+            expected_hold_days=self.settings.expected_hold_days,
+            max_hold_days=self.settings.maximum_hold_days,
+            technical_thesis=TechnicalThesis(
+                trend=str(candidate.validator_features.get("trend") or candidate.sector_trend or "bullish"),
+                support=candidate.support,
+                trigger=entry_price,
+            ),
+            invalidations=(proposal.invalidation, "setup structure failure"),
+        )
+
+    def _remediate_protection_failure(
+        self,
+        *,
+        trade_id: str,
+        intent: OrderIntent,
+        risk: RiskDecision,
+        review: dict,
+        order: BrokerOrder,
+        protection: ProtectionEvidence,
+    ) -> ExecutionResult:
+        self.database.activate_halt("reconciliation_halt", protection.message, "protective_order_monitor")
+        self.lifecycle.request_exit(
+            trade_id,
+            trigger="protective_leg_failure",
+            reason_code=protection.reason_code,
+            context=protection.model_dump(mode="json"),
+        )
+        remediation: dict = {"action": "EMERGENCY_CLOSE_REQUESTED", "close_status": "UNKNOWN"}
+        try:
+            close_order = self.broker.close_position(intent.ticker)
+            remediation.update(close_status=close_order.status, close_order_id=close_order.broker_order_id)
+        except Exception as exc:
+            remediation.update(close_status="FAILED", error=str(exc))
+        self.database.record_execution_event(
+            intent_id=intent.intent_id,
+            decision_id=intent.decision_id,
+            trade_id=trade_id,
+            broker_order_id=order.broker_order_id,
+            ticker=intent.ticker,
+            side="sell",
+            quantity=order.filled_quantity,
+            event_type="PROTECTION_FAILURE_REMEDIATION",
+            status="HALTED",
+            payload={"protection": protection.model_dump(mode="json"), "remediation": remediation},
+        )
+        return ExecutionResult(
+            status="PROTECTION_FAILURE_HALTED",
+            intent_id=intent.intent_id,
+            risk=risk,
+            broker_review=review,
+            broker_order=order,
+            trade_id=trade_id,
+            message="Protective leg failure triggered an emergency close request and latched trading halt",
         )
 
     def _trade_values(

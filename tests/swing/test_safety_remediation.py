@@ -293,6 +293,10 @@ def test_unknown_outcome_halts_then_reconciles_after_restart(settings, database,
             "filled_avg_price": "100",
             "status": "filled",
             "submitted_at": datetime.now(timezone.utc).isoformat(),
+            "legs": [
+                {"id": "recovered-stop", "symbol": "XYZ", "side": "sell", "type": "stop", "stop_price": "96", "status": "new"},
+                {"id": "recovered-target", "symbol": "XYZ", "side": "sell", "type": "limit", "limit_price": "110", "status": "new"},
+            ],
         }
     ]
     reopened = SwingDatabase(settings.database_path)
@@ -300,6 +304,8 @@ def test_unknown_outcome_halts_then_reconciles_after_restart(settings, database,
     result = BrokerReconciler(enabled, reopened, broker).reconcile()
     assert result.reconciled
     assert result.recovered_admissions == 1
+    assert reopened.get_state("reconciliation_halt") is True
+    reopened.acknowledge_reconciliation_halt(acknowledged_by="test-operator", reason="broker truth reviewed")
     assert reopened.get_state("reconciliation_halt") is False
     assert reopened.open_trades()[0]["broker_order_id"] == "recovered-order"
 
@@ -364,6 +370,10 @@ def test_partial_exit_preserves_initial_shares_and_uses_weighted_exit(settings, 
         "filled_at": now.isoformat(),
     }
     broker.history = [buy, first_exit]
+    broker.open_orders = [
+        {"id": "remaining-stop", "parent_order_id": trade["broker_order_id"], "symbol": "XYZ", "side": "sell", "type": "stop", "stop_price": "96", "status": "new"},
+        {"id": "remaining-target", "parent_order_id": trade["broker_order_id"], "symbol": "XYZ", "side": "sell", "type": "limit", "limit_price": "110", "status": "new"},
+    ]
     broker.positions = [
         Position(
             symbol="XYZ",

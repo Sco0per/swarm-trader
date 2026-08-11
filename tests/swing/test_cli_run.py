@@ -44,7 +44,9 @@ def _make_candidate(ticker: str) -> SwingCandidate:
         structural_invalidation=96,
         earnings_trading_days=30,
         earnings_data_status="clear",
+        earnings_retrieved_at=now,
         major_event_status="clear",
+        major_event_retrieved_at=now,
         data=TimestampedData(source="test", retrieved_at=now, market_timestamp=now),
     )
 
@@ -77,8 +79,6 @@ class _StubBackend:
                 has_blocking_event_risk=False,
                 fundamental_context="no blocking events",
             )
-        elif role == "bull":
-            kwargs = dict(strongest_evidence=["price above rising moving averages"], thesis="trend intact", confidence=80)
         elif role == "bear":
             kwargs = dict(
                 kill_trade=False,
@@ -98,7 +98,7 @@ class _StubBackend:
         elif role == "portfolio_manager":
             kwargs = dict(
                 ticker=candidate["ticker"],
-                decision="BUY",
+                decision="APPROVE",
                 setup_type=candidate["setup_type"],
                 confidence_score=85,
                 market_regime=candidate["market_regime"],

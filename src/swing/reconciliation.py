@@ -12,6 +12,8 @@ from .agents import StructuredModelBackend
 from .brokers.base import BrokerProvider
 from .config import SwingSettings
 from .database import SwingDatabase
+from .lifecycle import IllegalLifecycleTransition, PositionLifecycleService
+from .models import PositionLifecycleState, TradeThesis
 from .postmortem import PostmortemEngine
 
 
@@ -67,6 +69,55 @@ class BrokerReconciler:
         self.postmortems = PostmortemEngine(
             database,
             consecutive_loss_halt=settings.consecutive_loss_halt,
+        )
+        self.lifecycle = PositionLifecycleService(settings, database)
+
+    @staticmethod
+    def _protective_legs(
+        symbol: str,
+        broker_order_id: str | None,
+        orders: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        linked = []
+        for row in orders:
+            if str(_value(row, "symbol", default="")).upper() != symbol or str(_value(row, "side", default="")).lower() != "sell":
+                continue
+            parent = str(_value(row, "parent_order_id", default=""))
+            if broker_order_id and parent and parent != str(broker_order_id):
+                continue
+            linked.append(row)
+        active = [row for row in linked if str(_value(row, "status", default="unknown")).lower() in ACTIVE_ORDER_STATUSES | {"pending_replace", "replaced"}]
+        terminal = [row for row in linked if str(_value(row, "status", default="unknown")).lower() in TERMINAL_EMPTY_STATUSES]
+        stops = [row for row in active if _value(row, "stop_price") is not None or str(_value(row, "type", "order_type", default="")).lower() in {"stop", "stop_limit", "trailing_stop"}]
+        targets = [row for row in active if _value(row, "limit_price") is not None and row not in stops]
+        return stops, targets, terminal
+
+    def _emergency_protection_remediation(self, trade: dict[str, Any], reason: str) -> None:
+        self.database.activate_halt("reconciliation_halt", reason, "broker_reconciler")
+        trade_id = str(trade["trade_id"])
+        lifecycle = self.database.get_position_lifecycle(trade_id)
+        if lifecycle and lifecycle["state"] not in {PositionLifecycleState.EXIT_PENDING.value, PositionLifecycleState.CLOSED.value}:
+            try:
+                self.lifecycle.request_exit(trade_id, trigger="protective_leg_failure", reason_code="EXIT_UNPROTECTED_POSITION", context={"reason": reason})
+            except IllegalLifecycleTransition:
+                pass
+        payload: dict[str, Any] = {"reason": reason, "action": "EMERGENCY_CLOSE_REQUESTED"}
+        try:
+            close_order = self.broker.close_position(str(trade["ticker"]))
+            payload.update(close_order_id=close_order.broker_order_id, close_status=close_order.status)
+        except Exception as exc:
+            payload.update(close_status="FAILED", error=str(exc))
+        self.database.record_execution_event(
+            intent_id=str(trade.get("intent_id") or f"reconcile-{trade_id}"),
+            decision_id=trade.get("decision_id"),
+            trade_id=trade_id,
+            broker_order_id=trade.get("broker_order_id"),
+            ticker=str(trade["ticker"]),
+            side="sell",
+            quantity=float(trade.get("shares") or 0),
+            event_type="PROTECTION_FAILURE_REMEDIATION",
+            status="HALTED",
+            payload=payload,
         )
 
     def reconcile(self) -> ReconciliationResult:
@@ -131,7 +182,8 @@ class BrokerReconciler:
                 submitted = _value(match, "submitted_at", "filled_at")
                 if submitted:
                     trade["entry_datetime"] = str(submitted).replace("Z", "+00:00")
-                self.database.add_trade(trade)
+                thesis = TradeThesis.model_validate(payload["thesis"])
+                self.database.add_trade_with_thesis(trade, thesis)
                 self.database.update_admission(intent_id, "SUBMITTED", trade_id=trade["trade_id"], broker_order_id=order_id)
                 self.database.record_execution_event(
                     intent_id=intent_id, decision_id=trade["decision_id"], trade_id=trade["trade_id"],
@@ -143,6 +195,7 @@ class BrokerReconciler:
                 discrepancies.append(f"Could not recover intent {intent_id}: {exc}")
 
         open_trades = self.database.open_trades()
+        all_orders = _flatten_orders(open_orders) + history
         known_symbols = {str(trade["ticker"]).upper() for trade in open_trades}
         known_order_ids = {str(trade["broker_order_id"]) for trade in open_trades if trade.get("broker_order_id")}
         known_intents = {str(trade["intent_id"]) for trade in open_trades if trade.get("intent_id")}
@@ -166,6 +219,19 @@ class BrokerReconciler:
                     unrealized_pnl=(position.current_price - position.average_entry_price) * abs(position.quantity),
                     source=self.broker.name,
                 )
+                lifecycle = self.database.get_position_lifecycle(str(trade["trade_id"]))
+                if lifecycle is None:
+                    self.lifecycle.create_open(str(trade["trade_id"]), current_stop=float(trade["final_stop"]), trigger="restart_recovery_fill")
+                    lifecycle = self.database.get_position_lifecycle(str(trade["trade_id"]))
+                stops, targets, terminal_legs = self._protective_legs(symbol, trade.get("broker_order_id"), all_orders)
+                if not stops or not targets:
+                    reason = f"Position {symbol} lacks active broker stop/target protection"
+                    if terminal_legs:
+                        reason += "; a protective leg is terminal"
+                    discrepancies.append(reason)
+                    self._emergency_protection_remediation(trade, reason)
+                elif lifecycle and lifecycle["state"] == PositionLifecycleState.OPEN.value:
+                    self.lifecycle.mark_protected(str(trade["trade_id"]), evidence={"stop_legs": stops, "target_legs": targets})
                 updated += 1
                 continue
 
@@ -216,13 +282,26 @@ class BrokerReconciler:
                     if exit_raw else datetime.now(timezone.utc)
                 )
                 high, low = self.database.trade_price_extremes(trade["trade_id"], float(trade["entry_price"]))
+                lifecycle = self.database.get_position_lifecycle(str(trade["trade_id"]))
+                if lifecycle is None:
+                    self.lifecycle.create_open(str(trade["trade_id"]), current_stop=float(trade["final_stop"]), trigger="restart_recovery_exit")
+                    self.lifecycle.request_exit(str(trade["trade_id"]), trigger="broker_exit_fill", reason_code="EXIT_BROKER_PROTECTIVE_FILL")
+                elif lifecycle["state"] not in {PositionLifecycleState.EXIT_PENDING.value, PositionLifecycleState.CLOSED.value}:
+                    self.lifecycle.request_exit(str(trade["trade_id"]), trigger="broker_exit_fill", reason_code="EXIT_BROKER_PROTECTIVE_FILL")
+                is_gap_through = exit_price < float(trade["final_stop"])
+                reason_exit = "protective stop gap-through fill" if is_gap_through else "broker reconciliation detected a filled exit"
                 self.postmortems.close_and_review(
                     trade["trade_id"], exit_price=exit_price, exit_datetime=exit_time,
                     high_during_trade=high, low_during_trade=low,
-                    reason_exit="broker reconciliation detected a filled exit",
+                    reason_exit=reason_exit,
                     assessment={"evidence": {"broker_exit_fills": sell_fills}},
                     backend=self.postmortem_backend,
                     model_name=self.settings.models.postmortem_model or self.settings.models.fallback_model,
+                )
+                self.lifecycle.mark_closed(
+                    str(trade["trade_id"]),
+                    reason_code="CLOSED_GAP_THROUGH_STOP" if is_gap_through else "CLOSED_BROKER_EXIT",
+                    context={"exit_price": exit_price, "protective_stop": float(trade["final_stop"])},
                 )
                 if trade.get("intent_id"):
                     self.database.update_admission(str(trade["intent_id"]), "RECONCILED")
@@ -281,7 +360,9 @@ class BrokerReconciler:
         self, recovered: int, updated: int, closed: int, discrepancies: list[str],
     ) -> ReconciliationResult:
         reconciled = not discrepancies
-        self.database.set_state("reconciliation_halt", not reconciled, "broker_reconciler")
+        if not reconciled:
+            self.database.activate_halt("reconciliation_halt", "; ".join(discrepancies), "broker_reconciler")
+            self.database.record_reconciliation_mismatch(discrepancies)
         self.database.set_state(
             "last_reconciliation",
             {"at": datetime.now(timezone.utc).isoformat(), "reconciled": reconciled, "discrepancies": discrepancies},

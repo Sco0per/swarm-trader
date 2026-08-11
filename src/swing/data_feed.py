@@ -347,6 +347,7 @@ def build_universe_assets(
     entries = entries if entries is not None else UNIVERSE
     stock_symbols = [entry.symbol for entry in entries if not entry.is_etf]
     earnings_by_symbol = fetch_earnings_trading_days_batch(stock_symbols, database=database) if stock_symbols else {}
+    safety_data_retrieved_at = datetime.now(timezone.utc)
     assets: list[UniverseAsset] = []
     for entry in entries:
         metadata = (broker_assets or {}).get(entry.symbol, {})
@@ -368,8 +369,10 @@ def build_universe_assets(
                 is_leveraged_or_inverse=False,
                 earnings_trading_days=None if entry.is_etf else earnings_by_symbol.get(entry.symbol),
                 earnings_data_status=("clear" if entry.is_etf or earnings_by_symbol.get(entry.symbol) is not None else "unavailable"),
+                earnings_retrieved_at=safety_data_retrieved_at,
                 # TODO: integrate deterministic FDA/M&A/index-rebalance/investor-day calendars.
                 prohibited_event_risk=None if production_metadata else False,
+                major_event_retrieved_at=safety_data_retrieved_at,
                 bid=quote[0] if quote else None,
                 ask=quote[1] if quote else None,
                 quote_timestamp=quote[2] if quote else None,

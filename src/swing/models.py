@@ -37,6 +37,14 @@ class Decision(str, Enum):
     NO_TRADE = "NO_TRADE"
 
 
+class LLMReviewDecision(str, Enum):
+    """Advisory-only model verdicts; none of these authorize an order."""
+
+    APPROVE = "APPROVE"
+    REJECT = "REJECT"
+    WATCH = "WATCH"
+
+
 class TradeStatus(str, Enum):
     PLANNED = "PLANNED"
     SUBMITTED = "SUBMITTED"
@@ -45,6 +53,21 @@ class TradeStatus(str, Enum):
     CLOSED = "CLOSED"
     CANCELED = "CANCELED"
     REJECTED = "REJECTED"
+
+
+class PositionLifecycleState(str, Enum):
+    OPEN = "OPEN"
+    PROTECTED = "PROTECTED"
+    PROFITABLE = "PROFITABLE"
+    TRAILING = "TRAILING"
+    EXIT_PENDING = "EXIT_PENDING"
+    CLOSED = "CLOSED"
+
+
+class TimeStopAction(str, Enum):
+    HOLD = "HOLD"
+    REVIEW = "REVIEW"
+    EXIT = "EXIT"
 
 
 class LessonStatus(str, Enum):
@@ -131,8 +154,11 @@ class SwingCandidate(BaseModel):
     resistance: float = Field(gt=0)
     structural_invalidation: float = Field(gt=0)
     major_event_status: Literal["clear", "blocked", "unknown", "stale", "conflicting", "malformed"] = "unknown"
+    major_event_retrieved_at: datetime | None = None
     earnings_trading_days: int | None = None
     earnings_data_status: Literal["clear", "unavailable", "stale", "conflicting", "malformed"] = "unavailable"
+    earnings_retrieved_at: datetime | None = None
+    completed_daily_bar: bool = True
     is_etf: bool = False
     is_leveraged_or_inverse: bool = False
     is_halted: bool = False
@@ -144,6 +170,13 @@ class SwingCandidate(BaseModel):
         value = value.strip().upper()
         if not value or not value.replace(".", "").replace("-", "").isalnum():
             raise ValueError("invalid ticker")
+        return value
+
+    @field_validator("major_event_retrieved_at", "earnings_retrieved_at")
+    @classmethod
+    def safety_timestamp_timezone_required(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("safety-data timestamps must be timezone-aware")
         return value
 
 
@@ -204,7 +237,15 @@ class BrokerAsset(BaseModel):
     status: str
     marginable: bool | None = None
     is_leveraged_or_inverse: bool | None = None
+    retrieved_at: datetime = Field(default_factory=utc_now)
     raw: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("retrieved_at")
+    @classmethod
+    def asset_timestamp_timezone_required(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("broker asset timestamp must be timezone-aware")
+        return value
 
 
 class AccountSnapshot(BaseModel):
@@ -262,6 +303,48 @@ class OrderIntent(BaseModel):
     target_price: float = Field(gt=0)
     strategy_version: str
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class TechnicalThesis(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    trend: str
+    support: float = Field(gt=0)
+    trigger: float = Field(gt=0)
+
+
+class TradeThesis(BaseModel):
+    """Write-once contract describing why the original position was opened."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ticker: str
+    setup: SetupType
+    entry: float = Field(gt=0)
+    initial_stop: float = Field(gt=0)
+    initial_target: float = Field(gt=0)
+    initial_risk_dollars: float = Field(gt=0)
+    initial_risk_per_share: float = Field(gt=0)
+    initial_rr: float = Field(ge=0)
+    entry_score: float = Field(ge=0, le=100)
+    market_regime: str
+    expected_hold_days: int = Field(gt=0)
+    max_hold_days: int = Field(gt=0)
+    technical_thesis: TechnicalThesis
+    invalidations: tuple[str, ...] = Field(min_length=1)
+
+    @field_validator("ticker")
+    @classmethod
+    def normalize_thesis_symbol(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @model_validator(mode="after")
+    def valid_contract(self) -> "TradeThesis":
+        if not self.initial_stop < self.entry < self.initial_target:
+            raise ValueError("thesis requires initial_stop < entry < initial_target")
+        if self.expected_hold_days > self.max_hold_days:
+            raise ValueError("expected_hold_days cannot exceed max_hold_days")
+        return self
 
 
 class BrokerOrder(BaseModel):

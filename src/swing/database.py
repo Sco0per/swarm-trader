@@ -21,12 +21,13 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from hashlib import sha256
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from .models import PostmortemRecord, SwingCandidate
+from .models import PositionLifecycleState, PostmortemRecord, SwingCandidate, TradeThesis
 
 
 def _turso_serverless():
@@ -35,7 +36,7 @@ def _turso_serverless():
     return turso_serverless
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 DDL = """
@@ -159,6 +160,56 @@ CREATE TABLE IF NOT EXISTS trade_snapshots (
     mfe REAL,
     mae REAL,
     source TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS trade_theses (
+    trade_id TEXT PRIMARY KEY REFERENCES trades(trade_id),
+    thesis_json TEXT NOT NULL,
+    thesis_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS trade_theses_no_update
+BEFORE UPDATE ON trade_theses BEGIN
+    SELECT RAISE(ABORT, 'trade thesis is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trade_theses_no_delete
+BEFORE DELETE ON trade_theses BEGIN
+    SELECT RAISE(ABORT, 'trade thesis is immutable');
+END;
+CREATE TABLE IF NOT EXISTS position_lifecycle (
+    trade_id TEXT PRIMARY KEY REFERENCES trades(trade_id),
+    state TEXT NOT NULL CHECK(state IN ('OPEN','PROTECTED','PROFITABLE','TRAILING','EXIT_PENDING','CLOSED')),
+    current_stop REAL NOT NULL,
+    high_watermark REAL,
+    context_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lifecycle_events (
+    lifecycle_event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id TEXT NOT NULL REFERENCES trades(trade_id),
+    occurred_at TEXT NOT NULL,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    trigger TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    context_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS reconciliation_mismatches (
+    mismatch_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    detected_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('OPEN','ACKNOWLEDGED')),
+    discrepancies_json TEXT NOT NULL,
+    acknowledged_at TEXT,
+    acknowledged_by TEXT,
+    acknowledgement_reason TEXT
+);
+CREATE TABLE IF NOT EXISTS operational_alerts (
+    alert_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    code TEXT NOT NULL,
+    message TEXT NOT NULL,
     payload_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS agent_decisions (
@@ -369,6 +420,8 @@ CREATE INDEX IF NOT EXISTS idx_trades_context ON trades(setup_type, market_regim
 CREATE INDEX IF NOT EXISTS idx_candidates_ticker_time ON candidate_scores(ticker, evaluated_at);
 CREATE INDEX IF NOT EXISTS idx_events_intent ON execution_events(intent_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_admissions_status ON entry_admissions(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_events_trade ON lifecycle_events(trade_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_reconciliation_mismatches_status ON reconciliation_mismatches(status, detected_at);
 """
 
 
@@ -883,14 +936,152 @@ class SwingDatabase:
                 tuple(_json(v) if isinstance(v, (dict, list)) else v for v in record.values()),
             )
 
+    def add_trade_with_thesis(self, values: dict[str, Any], thesis: TradeThesis) -> None:
+        """Atomically persist the mutable journal row and immutable original thesis."""
+        if values.get("trade_id") is None or values.get("trade_id") == "":
+            raise ValueError("trade_id is required")
+        required = {
+            "trade_id", "decision_id", "ticker", "setup_type", "status", "strategy_version",
+            "initial_stop", "final_stop", "target", "shares", "planned_dollar_risk",
+            "planned_account_risk_pct", "planned_rr", "market_regime", "candidate_score",
+            "risk_validation_result",
+        }
+        missing = sorted(required - values.keys())
+        if missing:
+            raise ValueError(f"Missing trade fields: {', '.join(missing)}")
+        if str(values["ticker"]).upper() != thesis.ticker or str(values["setup_type"]) != thesis.setup.value:
+            raise ValueError("Trade row and immutable thesis identity do not match")
+        record = dict(values)
+        record.setdefault("created_at", _now())
+        record.setdefault("updated_at", record["created_at"])
+        columns = list(record)
+        thesis_json = thesis.model_dump_json()
+        with self.connect() as connection:
+            connection.execute(
+                f"INSERT INTO trades ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
+                tuple(_json(v) if isinstance(v, (dict, list)) else v for v in record.values()),
+            )
+            connection.execute(
+                "INSERT INTO trade_theses(trade_id,thesis_json,thesis_sha256,created_at) VALUES(?,?,?,?)",
+                (record["trade_id"], thesis_json, sha256(thesis_json.encode("utf-8")).hexdigest(), _now()),
+            )
+
+    def get_trade_thesis(self, trade_id: str) -> TradeThesis | None:
+        with self.connect() as connection:
+            row = connection.execute("SELECT thesis_json FROM trade_theses WHERE trade_id=?", (trade_id,)).fetchone()
+        return TradeThesis.model_validate_json(row["thesis_json"]) if row else None
+
+    def overwrite_trade_thesis(self, trade_id: str, thesis: TradeThesis) -> None:
+        """Explicitly exposed so callers/tests receive the storage-layer immutable failure."""
+        thesis_json = thesis.model_dump_json()
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE trade_theses SET thesis_json=?,thesis_sha256=? WHERE trade_id=?",
+                (thesis_json, sha256(thesis_json.encode("utf-8")).hexdigest(), trade_id),
+            )
+
     def update_trade(self, trade_id: str, **values: Any) -> None:
         if not values:
             return
+        immutable = {
+            "decision_id", "intent_id", "candidate_id", "ticker", "setup_type", "strategy_version",
+            "initial_stop", "target", "planned_dollar_risk", "planned_account_risk_pct", "planned_rr",
+            "market_regime", "candidate_score", "bull_thesis", "bear_thesis", "pm_reasoning", "reason_entry",
+        }
+        attempted = sorted(immutable.intersection(values))
+        if attempted:
+            raise ValueError(f"Immutable original trade fields cannot be updated: {', '.join(attempted)}")
         values["updated_at"] = _now()
         assignments = ",".join(f"{key}=?" for key in values)
         params = [(_json(value) if isinstance(value, (dict, list)) else value) for value in values.values()]
         with self.connect() as connection:
             connection.execute(f"UPDATE trades SET {assignments} WHERE trade_id=?", (*params, trade_id))
+
+    def create_position_lifecycle(
+        self,
+        trade_id: str,
+        state: PositionLifecycleState,
+        *,
+        current_stop: float,
+        trigger: str,
+    ) -> None:
+        now = _now()
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO position_lifecycle(trade_id,state,current_stop,context_json,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                (trade_id, state.value, current_stop, "{}", now, now),
+            )
+            connection.execute(
+                "INSERT INTO lifecycle_events(trade_id,occurred_at,from_state,to_state,trigger,reason_code,context_json) VALUES(?,?,?,?,?,?,?)",
+                (trade_id, now, None, state.value, trigger, "POSITION_OPENED", "{}"),
+            )
+
+    def get_position_lifecycle(self, trade_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM position_lifecycle WHERE trade_id=?", (trade_id,)).fetchone()
+        return dict(row) if row else None
+
+    def transition_position_lifecycle(
+        self,
+        trade_id: str,
+        *,
+        expected_state: PositionLifecycleState,
+        new_state: PositionLifecycleState,
+        trigger: str,
+        reason_code: str,
+        context: dict[str, Any],
+    ) -> bool:
+        now = _now()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE position_lifecycle SET state=?,context_json=?,updated_at=? WHERE trade_id=? AND state=?",
+                (new_state.value, _json(context), now, trade_id, expected_state.value),
+            )
+            if cursor.rowcount != 1:
+                return False
+            connection.execute(
+                "INSERT INTO lifecycle_events(trade_id,occurred_at,from_state,to_state,trigger,reason_code,context_json) VALUES(?,?,?,?,?,?,?)",
+                (trade_id, now, expected_state.value, new_state.value, trigger, reason_code, _json(context)),
+            )
+        return True
+
+    def update_position_runtime(self, trade_id: str, *, current_stop: float | None = None, high_watermark: float | None = None, context: dict[str, Any] | None = None) -> None:
+        updates: dict[str, Any] = {"updated_at": _now()}
+        if current_stop is not None:
+            updates["current_stop"] = current_stop
+        if high_watermark is not None:
+            updates["high_watermark"] = high_watermark
+        if context is not None:
+            updates["context_json"] = _json(context)
+        assignments = ",".join(f"{key}=?" for key in updates)
+        with self.connect() as connection:
+            connection.execute(f"UPDATE position_lifecycle SET {assignments} WHERE trade_id=?", (*updates.values(), trade_id))
+
+    def record_reconciliation_mismatch(self, discrepancies: list[str]) -> None:
+        now = _now()
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO reconciliation_mismatches(detected_at,status,discrepancies_json) VALUES(?,'OPEN',?)",
+                (now, _json(discrepancies)),
+            )
+            connection.execute(
+                "INSERT INTO operational_alerts(created_at,severity,code,message,payload_json) VALUES(?,'CRITICAL','RECONCILIATION_MISMATCH',?,?)",
+                (now, "; ".join(discrepancies), _json({"discrepancies": discrepancies})),
+            )
+
+    def acknowledge_reconciliation_halt(self, *, acknowledged_by: str, reason: str) -> None:
+        if not acknowledged_by.strip() or not reason.strip():
+            raise ValueError("Reconciliation acknowledgement requires actor and reason")
+        last = self.get_state("last_reconciliation", {})
+        if not isinstance(last, dict) or not last.get("reconciled"):
+            raise ValueError("A clean broker reconciliation is required before acknowledgement")
+        now = _now()
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE reconciliation_mismatches SET status='ACKNOWLEDGED',acknowledged_at=?,acknowledged_by=?,acknowledgement_reason=? WHERE status='OPEN'",
+                (now, acknowledged_by, reason),
+            )
+        self.set_state("reconciliation_halt", False, f"human:{acknowledged_by}")
 
     def record_trade_snapshot(
         self,

@@ -194,6 +194,21 @@ class SwingSettings:
     hostile_risk_multiplier: float = 0.25
     earnings_exclusion_trading_days: int = 5
     quote_freshness_seconds: int = 300
+    broker_asset_freshness_seconds: int = 60
+    market_clock_freshness_seconds: int = 60
+    corporate_event_freshness_seconds: int = 86_400
+    earnings_freshness_seconds: int = 86_400
+    maximum_entry_slippage_r: float = 0.25
+    expected_hold_days: int = 4
+    maximum_hold_days: int = 10
+    time_stop_minimum_progress_r: float = 0.50
+    time_stop_mode: str = "REVIEW"
+    stop_management_policy: str = "STRUCTURE_THEN_TRAIL"
+    profitable_trigger_r: float = 1.0
+    trailing_activation_r: float = 2.0
+    trailing_distance_r: float = 0.75
+    move_to_breakeven_at_r: float | None = None
+    trailing_eligible_setups: tuple[str, ...] = ("TREND_PULLBACK", "RELATIVE_STRENGTH_CONTINUATION")
     cooldown_trading_days: int = 10
     minimum_statistical_sample: int = 30
     maximum_scanner_candidates: int = 20
@@ -207,6 +222,34 @@ class SwingSettings:
             raise ValueError("Only TRADING_STYLE=swing is supported")
         if self.execution_mode not in {"backtest", "paper", "live"}:
             raise ValueError("EXECUTION_MODE must be backtest, paper, or live")
+        freshness = {
+            "quote_freshness_seconds": self.quote_freshness_seconds,
+            "broker_asset_freshness_seconds": self.broker_asset_freshness_seconds,
+            "market_clock_freshness_seconds": self.market_clock_freshness_seconds,
+            "corporate_event_freshness_seconds": self.corporate_event_freshness_seconds,
+            "earnings_freshness_seconds": self.earnings_freshness_seconds,
+        }
+        if any(value <= 0 for value in freshness.values()):
+            raise ValueError("Every execution freshness threshold must be positive")
+        if not 0 <= self.maximum_entry_slippage_r <= 0.25:
+            raise ValueError("MAXIMUM_ENTRY_SLIPPAGE_R may not exceed the immutable 0.25R ceiling")
+        if not 0 < self.expected_hold_days <= self.maximum_hold_days:
+            raise ValueError("Expected hold days must be positive and no greater than maximum hold days")
+        if self.time_stop_mode not in {"REVIEW", "EXIT"}:
+            raise ValueError("TIME_STOP_MODE must be REVIEW or EXIT")
+        if self.stop_management_policy not in {"STRUCTURAL_ONLY", "STRUCTURE_THEN_TRAIL"}:
+            raise ValueError("Unsupported STOP_MANAGEMENT_POLICY")
+        if not (0 <= self.time_stop_minimum_progress_r <= 2):
+            raise ValueError("TIME_STOP_MINIMUM_PROGRESS_R must remain between 0 and 2")
+        if not (0 < self.profitable_trigger_r <= self.trailing_activation_r):
+            raise ValueError("Profit and trailing R triggers must be positive and ordered")
+        if not 0 < self.trailing_distance_r <= 2:
+            raise ValueError("TRAILING_DISTANCE_R must remain between 0 and 2")
+        if self.move_to_breakeven_at_r is not None and self.move_to_breakeven_at_r <= 0:
+            raise ValueError("MOVE_TO_BREAKEVEN_AT_R must be positive when configured")
+        valid_setups = {"TREND_PULLBACK", "BREAKOUT_RETEST", "RELATIVE_STRENGTH_CONTINUATION"}
+        if not set(self.trailing_eligible_setups).issubset(valid_setups):
+            raise ValueError("TRAILING_ELIGIBLE_SETUPS contains an invalid setup")
         if not (0 < self.normal_risk_pct <= 0.0075):
             raise ValueError("NORMAL_RISK_PCT may not exceed the immutable 0.75% ceiling")
         if not (self.normal_risk_pct <= self.a_plus_risk_pct <= 0.0075):
@@ -328,6 +371,27 @@ def load_settings() -> SwingSettings:
         hostile_risk_multiplier=_float("HOSTILE_RISK_MULTIPLIER", 0.25),
         earnings_exclusion_trading_days=_int("EARNINGS_EXCLUSION_TRADING_DAYS", 5),
         quote_freshness_seconds=_int("QUOTE_FRESHNESS_SECONDS", 300),
+        broker_asset_freshness_seconds=_int("BROKER_ASSET_FRESHNESS_SECONDS", 60),
+        market_clock_freshness_seconds=_int("MARKET_CLOCK_FRESHNESS_SECONDS", 60),
+        corporate_event_freshness_seconds=_int("CORPORATE_EVENT_FRESHNESS_SECONDS", 86_400),
+        earnings_freshness_seconds=_int("EARNINGS_FRESHNESS_SECONDS", 86_400),
+        maximum_entry_slippage_r=_float("MAXIMUM_ENTRY_SLIPPAGE_R", 0.25),
+        expected_hold_days=_int("EXPECTED_HOLD_DAYS", 4),
+        maximum_hold_days=_int("MAXIMUM_HOLD_DAYS", 10),
+        time_stop_minimum_progress_r=_float("TIME_STOP_MINIMUM_PROGRESS_R", 0.50),
+        time_stop_mode=os.getenv("TIME_STOP_MODE", "REVIEW").upper(),
+        stop_management_policy=os.getenv("STOP_MANAGEMENT_POLICY", "STRUCTURE_THEN_TRAIL").upper(),
+        profitable_trigger_r=_float("PROFITABLE_TRIGGER_R", 1.0),
+        trailing_activation_r=_float("TRAILING_ACTIVATION_R", 2.0),
+        trailing_distance_r=_float("TRAILING_DISTANCE_R", 0.75),
+        move_to_breakeven_at_r=(
+            _float("MOVE_TO_BREAKEVEN_AT_R", 0.0) if os.getenv("MOVE_TO_BREAKEVEN_AT_R") not in (None, "") else None
+        ),
+        trailing_eligible_setups=tuple(
+            value.strip().upper()
+            for value in os.getenv("TRAILING_ELIGIBLE_SETUPS", "TREND_PULLBACK,RELATIVE_STRENGTH_CONTINUATION").split(",")
+            if value.strip()
+        ),
         cooldown_trading_days=_int("COOLDOWN_TRADING_DAYS", 10),
         minimum_statistical_sample=_int("MINIMUM_STATISTICAL_SAMPLE", 30),
         maximum_scanner_candidates=_int("MAXIMUM_SCANNER_CANDIDATES", 20),

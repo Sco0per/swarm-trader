@@ -63,7 +63,9 @@ def candidate():
         structural_invalidation=96,
         earnings_trading_days=10,
         earnings_data_status="clear",
+        earnings_retrieved_at=now,
         major_event_status="clear",
+        major_event_retrieved_at=now,
         data=TimestampedData(source="test", retrieved_at=now, market_timestamp=now),
     )
 

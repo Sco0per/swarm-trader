@@ -28,6 +28,7 @@ def _snapshot(**overrides):
         "positions": [],
         "open_orders": [],
         "asset": {"symbol": "XYZ", "asset_class": "us_equity", "tradable": True, "status": "active"},
+        "market": {"is_open": True, "retrieved_at": now},
         "quote": {"symbol": "XYZ", "last": 100.0, "bid": 99.95, "ask": 100.05, "retrieved_at": now, "market_timestamp": now},
         "trade_history": [],
     }
