@@ -26,7 +26,8 @@ swing expectancy.
 Swing hypothesis recording, validation planning, and the human-only promotion
 gate live in `src/autoresearch_swing/` and are documented in
 [docs/AUTORESEARCH_SWING.md](../docs/AUTORESEARCH_SWING.md). That package shares
-no code with this one.
+no code with this one. Human review remains mandatory for every promotion into
+the supported swing framework.
 
 Rebuilding this directory is explicitly out of scope for the current refactor
 series (`docs/REFACTOR_RULES.md` §1).

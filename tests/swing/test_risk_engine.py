@@ -8,9 +8,8 @@ import pytest
 from pydantic import ValidationError
 
 from src.swing.agents import PMStructuredDecision, TechnicalSwingAnalysis
-from src.swing.config import SwingSettings
-from src.swing.models import AccountSnapshot, BrokerAsset, Position
-from src.swing.risk import EXPOSURE_CLUSTERS, TICKER_CLUSTERS, SwingRiskManager
+from src.swing.models import BrokerAsset, Position
+from src.swing.risk import EXPOSURE_CLUSTERS, SwingRiskManager, TICKER_CLUSTERS
 
 
 def _review(settings, database, proposal, candidate, quote, portfolio, intent="risk-engine"):
@@ -63,9 +62,7 @@ def _add_trade(database, settings, *, symbol, risk, sector="Technology", status=
     ("price", "stop", "target", "expected"),
     [(100, 96, 108, 3), (50, 48, 54, 7), (20, 19, 22, 15)],
 )
-def test_risk_sizing_uses_point_seven_five_percent_and_whole_shares(
-    settings, database, proposal, candidate, quote, portfolio, price, stop, target, expected
-):
+def test_risk_sizing_uses_point_seven_five_percent_and_whole_shares(settings, database, proposal, candidate, quote, portfolio, price, stop, target, expected):
     candidate, proposal, quote = _geometry(candidate, proposal, quote, price=price, stop=stop, target=target, atr=price - stop)
     result = _review(settings, database, proposal, candidate, quote, portfolio)
     assert result.approved
@@ -131,11 +128,7 @@ def test_open_risk_is_rebuilt_from_durable_trade_state(settings, database, propo
 
 def test_stop_above_cost_counts_as_zero_not_negative_risk(settings, database, portfolio):
     _add_trade(database, settings, symbol="AAA", risk=8, shares=2, entry=100, stop=105)
-    state = portfolio.model_copy(
-        update={
-            "positions": [Position(symbol="AAA", quantity=2, average_entry_price=100, current_price=110, market_value=220, current_stop=105)]
-        }
-    )
+    state = portfolio.model_copy(update={"positions": [Position(symbol="AAA", quantity=2, average_entry_price=100, current_price=110, market_value=220, current_stop=105)]})
     snapshot, error = SwingRiskManager(settings, database)._open_risk(state)
     assert error is None
     assert snapshot is not None
@@ -150,9 +143,7 @@ def test_sector_limit_blocks_marginal_trade(settings, database, proposal, candid
     assert result.reason_code == "REJECT_SECTOR_RISK"
 
 
-def test_semiconductor_cluster_treats_nvda_amd_avgo_tsm_smci_as_one_risk(
-    settings, database, proposal, candidate, quote, portfolio
-):
+def test_semiconductor_cluster_treats_nvda_amd_avgo_tsm_smci_as_one_risk(settings, database, proposal, candidate, quote, portfolio):
     names = {"NVDA", "AMD", "AVGO", "TSM", "SMCI"}
     assert {TICKER_CLUSTERS[name] for name in names} == {"Semiconductors"}
     _add_trade(database, settings, symbol="NVDA", risk=10)
@@ -165,8 +156,15 @@ def test_semiconductor_cluster_treats_nvda_amd_avgo_tsm_smci_as_one_risk(
 
 def test_all_required_clusters_exist():
     assert set(EXPOSURE_CLUSTERS) == {
-        "Semiconductors", "Mega-cap technology", "High-beta growth", "Financials", "Healthcare",
-        "Defensives", "Industrials", "Consumer", "Energy",
+        "Semiconductors",
+        "Mega-cap technology",
+        "High-beta growth",
+        "Financials",
+        "Healthcare",
+        "Defensives",
+        "Industrials",
+        "Consumer",
+        "Energy",
     }
 
 
@@ -184,7 +182,6 @@ def test_weekly_drawdown_halt_is_durable(settings, database, proposal, candidate
     assert database.get_state("weekly_drawdown_halt") is True
     event = database.rows("SELECT * FROM halt_events WHERE halt_key='weekly_drawdown_halt'")[0]
     assert event["reason"].startswith("Weekly drawdown reached")
-
 
 
 def test_portfolio_drawdown_halt_is_durable(settings, database, proposal, candidate, quote, portfolio):
@@ -278,12 +275,20 @@ def test_llm_schemas_have_no_stop_quantity_or_limit_authority(candidate, proposa
     with pytest.raises(ValidationError):
         PMStructuredDecision.model_validate(
             {
-                "ticker": "XYZ", "decision": "BUY", "setup_type": "TREND_PULLBACK", "confidence_score": 90,
-                "market_regime": "BULL", "bull_case": "x", "bear_case": "y", "invalidation": "z",
-                "event_risk": "none", "reasoning": "x", "stop": 1,
+                "ticker": "XYZ",
+                "decision": "BUY",
+                "setup_type": "TREND_PULLBACK",
+                "confidence_score": 90,
+                "market_regime": "BULL",
+                "bull_case": "x",
+                "bear_case": "y",
+                "invalidation": "z",
+                "event_risk": "none",
+                "reasoning": "x",
+                "stop": 1,
             }
         )
-    manipulated = proposal.model_copy(update={"stop": 1, "target": 10_000, "requested_risk_pct": 0.5})
+    manipulated = proposal.model_copy(update={"stop": 1, "target": 10_000})
     result = _review(settings, database, manipulated, candidate, quote, portfolio)
     assert result.authoritative_stop == candidate.structural_invalidation
     assert result.quantity <= result.risk_constraints["risk"]

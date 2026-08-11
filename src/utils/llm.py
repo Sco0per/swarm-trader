@@ -1,10 +1,12 @@
 """Helper functions for LLM"""
 
 import json
+
 from pydantic import BaseModel
+
+from src.graph.state import AgentState
 from src.llm.models import get_model, get_model_info
 from src.utils.progress import progress
-from src.graph.state import AgentState
 
 
 def call_llm(
@@ -29,7 +31,7 @@ def call_llm(
     Returns:
         An instance of the specified Pydantic model
     """
-    
+
     # Extract model configuration if state is provided and agent_name is available
     if state and agent_name:
         model_name, model_provider = get_agent_model_config(state, agent_name)
@@ -38,15 +40,8 @@ def call_llm(
         model_name = "gpt-4.1"
         model_provider = "OPENAI"
 
-    # Extract API keys from state if available
-    api_keys = None
-    if state:
-        request = state.get("metadata", {}).get("request")
-        if request and hasattr(request, 'api_keys'):
-            api_keys = request.api_keys
-
     model_info = get_model_info(model_name, model_provider)
-    llm = get_model(model_name, model_provider, api_keys)
+    llm = get_model(model_name, model_provider)
 
     # Use structured output for models that support JSON mode (or when model info is unavailable)
     if model_info is None or model_info.has_json_mode():
@@ -118,7 +113,7 @@ def extract_json_from_response(content: str) -> dict | None:
     try:
         json_start = content.find("```json")
         if json_start != -1:
-            json_text = content[json_start + 7:]
+            json_text = content[json_start + 7 :]
             json_end = json_text.find("```")
             if json_end != -1:
                 json_text = json_text[:json_end].strip()
@@ -130,7 +125,7 @@ def extract_json_from_response(content: str) -> dict | None:
     try:
         json_start = content.find("```")
         if json_start != -1:
-            json_text = content[json_start + 3:]
+            json_text = content[json_start + 3 :]
             json_end = json_text.find("```")
             if json_end != -1:
                 json_text = json_text[:json_end].strip()
@@ -140,8 +135,9 @@ def extract_json_from_response(content: str) -> dict | None:
 
     # 4. Try finding the first { ... } or [ ... ] block via greedy match
     import re
+
     try:
-        match = re.search(r'(\{[\s\S]*\})', content)
+        match = re.search(r"(\{[\s\S]*\})", content)
         if match:
             return json.loads(match.group(1))
     except (json.JSONDecodeError, TypeError):
@@ -157,20 +153,20 @@ def get_agent_model_config(state, agent_name):
     Always returns valid model_name and model_provider values.
     """
     request = state.get("metadata", {}).get("request")
-    
-    if request and hasattr(request, 'get_agent_model_config'):
+
+    if request and hasattr(request, "get_agent_model_config"):
         # Get agent-specific model configuration
         model_name, model_provider = request.get_agent_model_config(agent_name)
         # Ensure we have valid values
         if model_name and model_provider:
-            return model_name, model_provider.value if hasattr(model_provider, 'value') else str(model_provider)
-    
+            return model_name, model_provider.value if hasattr(model_provider, "value") else str(model_provider)
+
     # Fall back to global configuration (system defaults)
     model_name = state.get("metadata", {}).get("model_name") or "gpt-4.1"
     model_provider = state.get("metadata", {}).get("model_provider") or "OPENAI"
-    
+
     # Convert enum to string if necessary
-    if hasattr(model_provider, 'value'):
+    if hasattr(model_provider, "value"):
         model_provider = model_provider.value
-    
+
     return model_name, model_provider

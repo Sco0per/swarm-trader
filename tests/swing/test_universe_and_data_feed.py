@@ -5,7 +5,7 @@ import pandas as pd
 from src.swing import data_feed
 from src.swing.market import SECTOR_ETFS
 from src.swing.risk import LEVERAGED_OR_INVERSE_ETFS
-from src.swing.universe import UNIVERSE, UNIVERSE_SYMBOLS
+from src.swing.universe import load_universe, UNIVERSE, UNIVERSE_SYMBOLS
 
 
 def test_earnings_cache_round_trips_through_database(database):
@@ -26,6 +26,20 @@ def test_universe_excludes_leveraged_and_uses_valid_sectors():
         assert entry.sector in valid_sectors
     assert len(UNIVERSE) >= 100
     assert "SPY" in UNIVERSE_SYMBOLS and "QQQ" in UNIVERSE_SYMBOLS
+
+
+def test_custom_universe_cannot_add_an_unapproved_etf(tmp_path):
+    path = tmp_path / "universe.csv"
+    path.write_text(
+        "symbol,sector,security_type,source_membership\nMYSTERY,Technology,etf,CUSTOM\n",
+        encoding="utf-8",
+    )
+    try:
+        load_universe(path)
+    except RuntimeError as exc:
+        assert "unleveraged ETF allowlist" in str(exc)
+    else:
+        raise AssertionError("An unapproved ETF must fail closed")
 
 
 class _FakeTicker:

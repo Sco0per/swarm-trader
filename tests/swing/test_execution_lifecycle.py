@@ -91,6 +91,18 @@ def _filled_trade(settings, database, proposal, candidate, quote):
     return enabled, broker, result
 
 
+def test_manual_close_uses_execution_boundary_and_is_idempotent(settings, database, candidate):
+    trade_id = _seed_trade(database, settings, candidate, state=PositionLifecycleState.PROTECTED)
+    broker = FakeBrokerProvider()
+    broker.positions = [Position(symbol=candidate.ticker, quantity=3, average_entry_price=100, current_price=101, market_value=303, current_stop=96)]
+    service = SwingExecutionService(settings, database, broker)
+    order = service.request_manual_close(trade_id, approved_by="paper-operator", reason="manual safety review")
+    assert order.side == "sell"
+    assert database.get_position_lifecycle(trade_id)["state"] == "EXIT_PENDING"
+    with pytest.raises(ValueError, match="already been requested"):
+        service.request_manual_close(trade_id, approved_by="paper-operator", reason="duplicate")
+
+
 def test_filled_bracket_is_immediately_protected_and_thesis_is_immutable(settings, database, proposal, candidate, quote):
     _, _, result = _filled_trade(settings, database, proposal, candidate, quote)
     assert result.trade_id is not None

@@ -505,8 +505,7 @@ class SwingRiskManager:
             MarketRegime.HIGH_VOLATILITY_RISK_OFF: 0.0,
         }[candidate.market_regime]
         base_risk = settings.reduced_risk_pct if portfolio_drawdown >= settings.reduce_risk_drawdown_pct else settings.normal_risk_pct
-        requested = proposal.requested_risk_pct if proposal.requested_risk_pct is not None else base_risk
-        applied_risk_pct = min(base_risk * regime_multiplier, requested, settings.absolute_max_risk_pct)
+        applied_risk_pct = min(base_risk * regime_multiplier, settings.absolute_max_risk_pct)
         allowed_dollar_risk = portfolio.account.equity * applied_risk_pct
         risk_quantity = math.floor(allowed_dollar_risk / risk_per_share)
         computed.update(applied_risk_pct=applied_risk_pct, allowed_dollar_risk=allowed_dollar_risk, risk_quantity=risk_quantity)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
@@ -14,17 +15,32 @@ def _bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean (true/false)")
 
 
 def _float(name: str, default: float) -> float:
     value = os.getenv(name)
-    return float(value) if value not in (None, "") else default
+    if value in (None, ""):
+        return default
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
 
 
 def _int(name: str, default: int) -> int:
     value = os.getenv(name)
-    return int(value) if value not in (None, "") else default
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
 
 
 @dataclass(frozen=True)
@@ -35,6 +51,31 @@ class ModelSettings:
     postmortem_model: str | None = field(default_factory=lambda: os.getenv("POSTMORTEM_MODEL") or None)
     research_model: str | None = field(default_factory=lambda: os.getenv("RESEARCH_MODEL") or None)
     fallback_model: str | None = field(default_factory=lambda: os.getenv("MODEL_FALLBACK") or None)
+
+
+@dataclass(frozen=True)
+class ScheduleSettings:
+    """Named-zone schedule values owned by the central settings model."""
+
+    timezone_name: str = "America/New_York"
+    initial_scan_et: str = "09:35"
+    decision_cycle_et: str = "10:15"
+    midday_refresh_et: str = "12:30"
+    afternoon_refresh_et: str = "14:30"
+    position_health_et: str = "15:45"
+    daily_report_et: str = "16:15"
+    weekly_lessons_et: str = "Sunday 18:00"
+
+    def __post_init__(self) -> None:
+        if self.timezone_name != "America/New_York":
+            raise ValueError("SCHEDULE_TIMEZONE must be America/New_York")
+        weekday = re.compile(r"^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday) (?:[01]\d|2[0-3]):[0-5]\d$")
+        clock = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+        for name in ("initial_scan_et", "decision_cycle_et", "midday_refresh_et", "afternoon_refresh_et", "position_health_et", "daily_report_et"):
+            if not clock.fullmatch(getattr(self, name)):
+                raise ValueError(f"{name.upper()} must be a valid 24-hour ET time")
+        if not weekday.fullmatch(self.weekly_lessons_et):
+            raise ValueError("WEEKLY_LESSONS_ET must be '<weekday> HH:MM'")
 
 
 @dataclass(frozen=True)
@@ -157,7 +198,6 @@ class SwingSettings:
     universe_path: Path = ROOT / "config" / "universe" / "us_liquid_2026-08-11.csv"
 
     normal_risk_pct: float = 0.0075
-    a_plus_risk_pct: float = 0.0075
     absolute_max_risk_pct: float = 0.01
     reduced_risk_pct: float = 0.003
     reduce_risk_drawdown_pct: float = 0.05
@@ -178,7 +218,6 @@ class SwingSettings:
     broker_min_quantity: int = 1
 
     minimum_rr: float = 2.0
-    exceptional_minimum_rr: float = 1.5
     buy_score_threshold: float = 80.0
     preferred_score_threshold: float = 85.0
     a_plus_score_threshold: float = 90.0
@@ -217,48 +256,52 @@ class SwingSettings:
     maximum_scanner_candidates: int = 20
     maximum_pm_candidates: int = 5
     models: ModelSettings = field(default_factory=ModelSettings)
+    schedule: ScheduleSettings = field(default_factory=ScheduleSettings)
     strategy: StrategySettings = field(default_factory=StrategySettings)
     score_weights: EntryScoreWeights = field(default_factory=EntryScoreWeights)
 
     def __post_init__(self) -> None:
         if self.trading_style != "swing":
             raise ValueError("Only TRADING_STYLE=swing is supported")
-        if self.execution_mode not in {"backtest", "paper", "live"}:
-            raise ValueError("EXECUTION_MODE must be backtest, paper, or live")
-        freshness = {
-            "quote_freshness_seconds": self.quote_freshness_seconds,
-            "broker_asset_freshness_seconds": self.broker_asset_freshness_seconds,
-            "market_clock_freshness_seconds": self.market_clock_freshness_seconds,
-            "corporate_event_freshness_seconds": self.corporate_event_freshness_seconds,
-            "earnings_freshness_seconds": self.earnings_freshness_seconds,
+        if self.execution_mode not in {"paper", "live"}:
+            raise ValueError("EXECUTION_MODE must be paper or live")
+        freshness_bounds = {
+            "QUOTE_FRESHNESS_SECONDS": (self.quote_freshness_seconds, 300),
+            "BROKER_ASSET_FRESHNESS_SECONDS": (self.broker_asset_freshness_seconds, 60),
+            "MARKET_CLOCK_FRESHNESS_SECONDS": (self.market_clock_freshness_seconds, 60),
+            "CORPORATE_EVENT_FRESHNESS_SECONDS": (self.corporate_event_freshness_seconds, 86_400),
+            "EARNINGS_FRESHNESS_SECONDS": (self.earnings_freshness_seconds, 86_400),
         }
-        if any(value <= 0 for value in freshness.values()):
-            raise ValueError("Every execution freshness threshold must be positive")
+        for name, (value, maximum) in freshness_bounds.items():
+            if not 1 <= value <= maximum:
+                raise ValueError(f"{name} must be between 1 and {maximum}")
         if not 0 <= self.maximum_entry_slippage_r <= 0.25:
             raise ValueError("MAXIMUM_ENTRY_SLIPPAGE_R may not exceed the immutable 0.25R ceiling")
-        if not 0 < self.expected_hold_days <= self.maximum_hold_days:
-            raise ValueError("Expected hold days must be positive and no greater than maximum hold days")
+        if not 1 <= self.expected_hold_days <= 4:
+            raise ValueError("EXPECTED_HOLD_DAYS must be between 1 and the immutable 4-day ceiling")
+        if not self.expected_hold_days <= self.maximum_hold_days <= 10:
+            raise ValueError("MAXIMUM_HOLD_DAYS must be at least EXPECTED_HOLD_DAYS and no greater than 10")
         if self.time_stop_mode not in {"REVIEW", "EXIT"}:
             raise ValueError("TIME_STOP_MODE must be REVIEW or EXIT")
         if self.stop_management_policy not in {"STRUCTURAL_ONLY", "STRUCTURE_THEN_TRAIL"}:
             raise ValueError("Unsupported STOP_MANAGEMENT_POLICY")
-        if not (0 <= self.time_stop_minimum_progress_r <= 2):
-            raise ValueError("TIME_STOP_MINIMUM_PROGRESS_R must remain between 0 and 2")
-        if not (0 < self.profitable_trigger_r <= self.trailing_activation_r):
-            raise ValueError("Profit and trailing R triggers must be positive and ordered")
-        if not 0 < self.trailing_distance_r <= 2:
-            raise ValueError("TRAILING_DISTANCE_R must remain between 0 and 2")
-        if self.move_to_breakeven_at_r is not None and self.move_to_breakeven_at_r <= 0:
-            raise ValueError("MOVE_TO_BREAKEVEN_AT_R must be positive when configured")
+        if not (0.5 <= self.time_stop_minimum_progress_r <= 2):
+            raise ValueError("TIME_STOP_MINIMUM_PROGRESS_R must remain between 0.50 and 2.00R")
+        if not (0 < self.profitable_trigger_r <= 1.0):
+            raise ValueError("PROFITABLE_TRIGGER_R must be positive and cannot exceed 1.00R")
+        if not (self.profitable_trigger_r <= self.trailing_activation_r <= 2.0):
+            raise ValueError("TRAILING_ACTIVATION_R must be ordered and cannot exceed 2.00R")
+        if not 0 < self.trailing_distance_r <= 0.75:
+            raise ValueError("TRAILING_DISTANCE_R must be positive and cannot exceed 0.75R")
+        if self.move_to_breakeven_at_r is not None and not 0 < self.move_to_breakeven_at_r <= 2.0:
+            raise ValueError("MOVE_TO_BREAKEVEN_AT_R must be between 0 and 2.00R when configured")
         valid_setups = {"TREND_PULLBACK", "BREAKOUT_RETEST", "RELATIVE_STRENGTH_CONTINUATION"}
         if not set(self.trailing_eligible_setups).issubset(valid_setups):
             raise ValueError("TRAILING_ELIGIBLE_SETUPS contains an invalid setup")
         if not (0 < self.normal_risk_pct <= 0.0075):
             raise ValueError("NORMAL_RISK_PCT may not exceed the immutable 0.75% ceiling")
-        if not (self.normal_risk_pct <= self.a_plus_risk_pct <= 0.0075):
-            raise ValueError("A_PLUS_RISK_PCT may not exceed the immutable 0.75% ceiling")
-        if not (self.a_plus_risk_pct <= self.absolute_max_risk_pct <= 0.01):
-            raise ValueError("ABSOLUTE_MAX_RISK_PCT may not exceed 1.00%")
+        if self.absolute_max_risk_pct != 0.01:
+            raise ValueError("ABSOLUTE_MAX_RISK_PCT is immutable at 1.00%")
         if not (0.0025 <= self.reduced_risk_pct <= 0.0035):
             raise ValueError("REDUCED_RISK_PCT must remain between 0.25% and 0.35%")
         if self.reduce_risk_drawdown_pct > 0.05 or self.halt_drawdown_pct > 0.08:
@@ -295,10 +338,8 @@ class SwingSettings:
             raise ValueError("Score thresholds must be ordered and BUY_SCORE_THRESHOLD cannot be below 80")
         if not (0 <= self.borderline_score_threshold < self.buy_score_threshold):
             raise ValueError("BORDERLINE_SCORE_THRESHOLD must be below BUY_SCORE_THRESHOLD")
-        if self.minimum_rr < 2.0 or self.exceptional_minimum_rr < 1.5:
-            raise ValueError("Reward/risk minimums may be stricter, but not weaker than 2.0/1.5")
-        if self.exceptional_minimum_rr > self.minimum_rr:
-            raise ValueError("Exceptional reward/risk cannot exceed the normal minimum")
+        if self.minimum_rr < 2.0:
+            raise ValueError("MINIMUM_RR may not be below 2.00R")
         if self.minimum_price < 5 or self.minimum_average_volume < 1_000_000 or not 20_000_000 <= self.minimum_average_dollar_volume <= 5_000_000_000:
             raise ValueError("Liquidity filters may be stricter, but not weaker than the production floors")
         if not 120 <= self.minimum_history_sessions <= 200:
@@ -307,8 +348,6 @@ class SwingSettings:
             raise ValueError("MINIMUM_HISTORY_SESSIONS must cover the configured long moving average")
         if not (0 < self.maximum_spread_pct <= 0.005):
             raise ValueError("MAXIMUM_SPREAD_PCT must be positive and cannot exceed 0.50%")
-        if not (1 <= self.quote_freshness_seconds <= 300):
-            raise ValueError("QUOTE_FRESHNESS_SECONDS must be between 1 and 300")
         if self.earnings_exclusion_trading_days < 5 or self.cooldown_trading_days < 10:
             raise ValueError("Event and post-loss exclusions may not be weakened")
         if self.minimum_statistical_sample < 30:
@@ -341,7 +380,6 @@ def load_settings() -> SwingSettings:
         do_not_trade_path=Path(os.getenv("DO_NOT_TRADE_PATH", str(ROOT / "config" / "do_not_trade.yaml"))),
         universe_path=Path(os.getenv("SWING_UNIVERSE_PATH", str(ROOT / "config" / "universe" / "us_liquid_2026-08-11.csv"))),
         normal_risk_pct=_float("NORMAL_RISK_PCT", 0.0075),
-        a_plus_risk_pct=_float("A_PLUS_RISK_PCT", 0.0075),
         absolute_max_risk_pct=_float("ABSOLUTE_MAX_RISK_PCT", 0.01),
         reduced_risk_pct=_float("REDUCED_RISK_PCT", 0.003),
         reduce_risk_drawdown_pct=_float("REDUCE_RISK_DRAWDOWN_PCT", 0.05),
@@ -360,7 +398,6 @@ def load_settings() -> SwingSettings:
         maximum_adv_fraction=_float("MAXIMUM_ADV_FRACTION", 0.001),
         broker_min_quantity=_int("BROKER_MIN_QUANTITY", 1),
         minimum_rr=_float("MINIMUM_RR", 2.0),
-        exceptional_minimum_rr=_float("EXCEPTIONAL_MINIMUM_RR", 1.5),
         buy_score_threshold=_float("BUY_SCORE_THRESHOLD", 80.0),
         preferred_score_threshold=_float("PREFERRED_SCORE_THRESHOLD", 85.0),
         a_plus_score_threshold=_float("A_PLUS_SCORE_THRESHOLD", 90.0),
@@ -398,6 +435,16 @@ def load_settings() -> SwingSettings:
         llm_material_score_change=_float("LLM_MATERIAL_SCORE_CHANGE", 5.0),
         maximum_scanner_candidates=_int("MAXIMUM_SCANNER_CANDIDATES", 20),
         maximum_pm_candidates=_int("MAXIMUM_PM_CANDIDATES", 5),
+        schedule=ScheduleSettings(
+            timezone_name=os.getenv("SCHEDULE_TIMEZONE", "America/New_York"),
+            initial_scan_et=os.getenv("SCHEDULE_INITIAL_SCAN_ET", "09:35"),
+            decision_cycle_et=os.getenv("SCHEDULE_DECISION_CYCLE_ET", "10:15"),
+            midday_refresh_et=os.getenv("SCHEDULE_MIDDAY_REFRESH_ET", "12:30"),
+            afternoon_refresh_et=os.getenv("SCHEDULE_AFTERNOON_REFRESH_ET", "14:30"),
+            position_health_et=os.getenv("SCHEDULE_POSITION_HEALTH_ET", "15:45"),
+            daily_report_et=os.getenv("SCHEDULE_DAILY_REPORT_ET", "16:15"),
+            weekly_lessons_et=os.getenv("SCHEDULE_WEEKLY_LESSONS_ET", "Sunday 18:00"),
+        ),
         strategy=StrategySettings(
             short_ema_period=_int("STRATEGY_SHORT_EMA_PERIOD", 20),
             atr_period=_int("STRATEGY_ATR_PERIOD", 14),

@@ -76,7 +76,6 @@ def decision_envelope(
 def risk_settings_snapshot(settings: SwingSettings) -> dict[str, Any]:
     names = (
         "normal_risk_pct",
-        "a_plus_risk_pct",
         "absolute_max_risk_pct",
         "max_combined_open_risk_pct",
         "max_sector_open_risk_pct",

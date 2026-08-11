@@ -9,7 +9,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from portfolio_monitor import check_hard_stop, check_trailing_stop, run_monitor
 from src.swing.brokers.alpaca import AlpacaPaperProvider
 from src.swing.brokers.fake import FakeBrokerProvider
 from src.swing.database import SwingDatabase
@@ -56,27 +55,22 @@ def _add_open_trade(database, settings, candidate, *, ticker="XYZ", broker_order
     return trade_id
 
 
-def test_legacy_monitor_is_disabled_and_zero_thresholds_never_trigger():
-    flat = {"avg_entry_price": "100", "current_price": "100"}
-    profitable = {"avg_entry_price": "100", "current_price": "105"}
-    assert check_hard_stop(flat, 0) == (False, "")
-    assert check_trailing_stop(profitable, 110, 0) == (False, "")
-    result = run_monitor(dry_run=False, mode="swing")
-    assert result["status"] == "DISABLED_FAIL_CLOSED"
-    assert result["actions"] == []
-
-
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
         ({"normal_risk_pct": 0.0076}, "0.75%"),
-        ({"a_plus_risk_pct": 0.0076}, "0.75%"),
         ({"absolute_max_risk_pct": 0.0101}, "1.00%"),
         ({"max_combined_open_risk_pct": 0.0201}, "2.00%"),
         ({"buy_score_threshold": 79}, "below 80"),
         ({"max_open_positions": 4}, "one and three"),
         ({"max_new_positions_day": 2}, "one per day"),
         ({"quote_freshness_seconds": 301}, "between 1 and 300"),
+        ({"broker_asset_freshness_seconds": 61}, "BROKER_ASSET_FRESHNESS_SECONDS"),
+        ({"market_clock_freshness_seconds": 61}, "MARKET_CLOCK_FRESHNESS_SECONDS"),
+        ({"corporate_event_freshness_seconds": 86_401}, "CORPORATE_EVENT_FRESHNESS_SECONDS"),
+        ({"earnings_freshness_seconds": 86_401}, "EARNINGS_FRESHNESS_SECONDS"),
+        ({"maximum_hold_days": 11}, "MAXIMUM_HOLD_DAYS"),
+        ({"trailing_distance_r": 0.76}, "TRAILING_DISTANCE_R"),
     ],
 )
 def test_hard_settings_cannot_be_weakened(settings, changes, message):
@@ -84,7 +78,7 @@ def test_hard_settings_cannot_be_weakened(settings, changes, message):
         replace(settings, **changes)
 
 
-def test_a_plus_request_is_capped_at_point_seven_five_percent(
+def test_external_risk_request_is_schema_rejected(
     settings,
     database,
     proposal,
@@ -92,19 +86,8 @@ def test_a_plus_request_is_capped_at_point_seven_five_percent(
     quote,
     portfolio,
 ):
-    candidate = candidate.model_copy(update={"score": 90})
-    proposal = proposal.model_copy(
-        update={
-            "candidate_score": 90,
-            "confidence_score": 90,
-            "requested_risk_pct": 0.01,
-        }
-    )
-    result = SwingRiskManager(settings, database).validate_entry(proposal, candidate, quote, portfolio, "a-plus")
-    assert result.approved
-    assert result.applied_risk_pct == pytest.approx(0.0075)
-    assert result.allowed_dollar_risk == 15
-    assert result.planned_account_risk_pct <= settings.absolute_max_risk_pct
+    with pytest.raises(ValueError):
+        proposal.__class__.model_validate({**proposal.model_dump(mode="json"), "requested_risk_pct": 0.01})
 
 
 def test_future_market_timestamp_is_rejected(settings, database, proposal, candidate, quote, portfolio):

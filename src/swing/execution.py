@@ -25,8 +25,8 @@ from .models import (
     TradeThesis,
 )
 from .protection import ProtectionEvidence, verify_broker_bracket
-from .reconciliation import BrokerReconciler
 from .risk import SwingRiskManager
+from .security import redact_text
 
 
 class ExecutionResult(BaseModel):
@@ -37,6 +37,12 @@ class ExecutionResult(BaseModel):
     broker_order: BrokerOrder | None = None
     trade_id: str | None = None
     message: str
+
+
+def request_safety_close(broker: BrokerProvider, symbol: str) -> BrokerOrder:
+    """Central execution boundary for deterministic, risk-reducing closes."""
+
+    return broker.close_position(symbol)
 
 
 class SwingExecutionService:
@@ -95,6 +101,8 @@ class SwingExecutionService:
         intent_id = self.intent_id(proposal)
         self.database.record_candidate(candidate)
         if not dry_run:
+            from .reconciliation import BrokerReconciler
+
             reconciliation = BrokerReconciler(self.settings, self.database, self.broker).reconcile()
             if not reconciliation.reconciled:
                 risk = self.risk_manager.reject(
@@ -432,6 +440,60 @@ class SwingExecutionService:
             trade_id=trade_id,
             message="Order submitted once and persisted for reconciliation",
         )
+
+    def request_manual_close(self, trade_id: str, *, approved_by: str, reason: str) -> BrokerOrder:
+        """Request one idempotent paper close through the supported execution boundary."""
+
+        if not approved_by.strip() or not reason.strip():
+            raise ValueError("Manual close requires approved_by and reason")
+        trade = self.database.get_trade(trade_id)
+        if trade is None:
+            raise KeyError(trade_id)
+        if trade["status"] == "CLOSED":
+            raise ValueError(f"Trade {trade_id} is already closed")
+        close_intent_id = f"manual-close-{trade_id}"
+        if self.database.rows(
+            "SELECT 1 FROM execution_events WHERE intent_id=? AND event_type='MANUAL_CLOSE_REQUESTED' LIMIT 1",
+            (close_intent_id,),
+        ):
+            raise ValueError(f"A manual close has already been requested for trade {trade_id}; reconcile before retrying")
+        safe_reason = redact_text(reason)
+        self.lifecycle.request_exit(
+            trade_id,
+            trigger="manual_safety_exit",
+            reason_code="EXIT_MANUAL_SAFETY",
+            context={"approved_by": approved_by, "reason": safe_reason},
+        )
+        try:
+            order = self.broker.close_position(str(trade["ticker"]))
+        except Exception as exc:
+            self.database.activate_halt("reconciliation_halt", f"Manual close outcome is unknown for {trade_id}", "manual_close")
+            self.database.record_execution_event(
+                intent_id=close_intent_id,
+                decision_id=trade.get("decision_id"),
+                trade_id=trade_id,
+                broker_order_id=None,
+                ticker=str(trade["ticker"]),
+                side="sell",
+                quantity=float(trade.get("shares") or 0),
+                event_type="MANUAL_CLOSE_REQUESTED",
+                status="UNKNOWN",
+                payload={"approved_by": approved_by, "reason": safe_reason, "error": redact_text(exc)},
+            )
+            raise
+        self.database.record_execution_event(
+            intent_id=close_intent_id,
+            decision_id=trade.get("decision_id"),
+            trade_id=trade_id,
+            broker_order_id=order.broker_order_id,
+            ticker=str(trade["ticker"]),
+            side="sell",
+            quantity=float(trade.get("shares") or 0),
+            event_type="MANUAL_CLOSE_REQUESTED",
+            status=order.status,
+            payload={"approved_by": approved_by, "reason": safe_reason, "order": order.model_dump(mode="json")},
+        )
+        return order
 
     def _trade_thesis(
         self,

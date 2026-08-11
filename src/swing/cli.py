@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -33,6 +34,7 @@ from .postmortem import PostmortemEngine
 from .reconciliation import BrokerReconciler
 from .reporting import ReportingService
 from .risk import SwingRiskManager
+from .security import redact_text
 from .stops import ProtectedStopService
 
 
@@ -89,11 +91,12 @@ def _journal_open_trade_daily_bars(database: SwingDatabase, bars_by_symbol: dict
             )
 
 
-def main() -> int:
+def _run() -> int:
     parser = argparse.ArgumentParser(description="Conservative adaptive swing trading controls")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init-db", help="Initialize/migrate the SQLite system of record")
-    sub.add_parser("status", help="Show kill switches, mode, and durable record counts")
+    sub.add_parser("status", help="Show execution mode, safety latches, and durable record counts")
+    sub.add_parser("positions", help="Show durable open swing positions and lifecycle state without contacting a broker")
     sub.add_parser("analytics", help="Calculate expectancy-first analytics")
     report = sub.add_parser("report", help="Generate a persistent report")
     report.add_argument("type", choices=["daily", "weekly", "20-trade", "50-trade", "100-trade", "graduation"])
@@ -132,6 +135,10 @@ def main() -> int:
     stop.add_argument("trade_id")
     stop.add_argument("broker_stop_order_id")
     stop.add_argument("new_stop", type=float)
+    close = sub.add_parser("close", help="Request one human-approved Alpaca paper safety exit; reconciliation confirms the fill")
+    close.add_argument("trade_id")
+    close.add_argument("--approved-by", required=True)
+    close.add_argument("--reason", required=True)
     args = parser.parse_args()
 
     settings, database = _database()
@@ -155,6 +162,25 @@ def main() -> int:
                 indent=2,
             )
         )
+    elif args.command == "positions":
+        positions = []
+        for trade in database.open_trades():
+            lifecycle = database.get_position_lifecycle(str(trade["trade_id"]))
+            positions.append(
+                {
+                    "trade_id": trade["trade_id"],
+                    "ticker": trade["ticker"],
+                    "setup_type": trade["setup_type"],
+                    "status": trade["status"],
+                    "lifecycle_state": lifecycle["state"] if lifecycle else None,
+                    "shares": trade["shares"],
+                    "entry_price": trade["entry_price"],
+                    "current_stop": lifecycle["current_stop"] if lifecycle else trade["final_stop"],
+                    "target": trade["target"],
+                    "planned_dollar_risk": trade["planned_dollar_risk"],
+                }
+            )
+        print(json.dumps({"positions": positions, "count": len(positions)}, indent=2))
     elif args.command == "analytics":
         print(json.dumps(reports.dashboard_payload(), indent=2, default=str))
     elif args.command == "report":
@@ -187,7 +213,7 @@ def main() -> int:
         broker = AlpacaPaperProvider(os.getenv("ALPACA_API_KEY", ""), os.getenv("ALPACA_API_SECRET", ""))
         result = SwingExecutionService(settings, database, broker).submit(proposal, candidate, dry_run=not args.submit)
         print(result.model_dump_json(indent=2))
-    elif args.command in {"reconcile", "tighten-stop"}:
+    elif args.command in {"reconcile", "tighten-stop", "close"}:
         if settings.execution_mode != "paper":
             raise ValueError(f"{args.command} currently supports EXECUTION_MODE=paper only")
         broker = AlpacaPaperProvider(os.getenv("ALPACA_API_KEY", ""), os.getenv("ALPACA_API_SECRET", ""))
@@ -196,6 +222,14 @@ def main() -> int:
             result = reconciler.reconcile()
             print(result.model_dump_json(indent=2))
             return 0 if result.reconciled else 2
+        if args.command == "close":
+            order = SwingExecutionService(settings, database, broker).request_manual_close(
+                args.trade_id,
+                approved_by=args.approved_by,
+                reason=args.reason,
+            )
+            print(order.model_dump_json(indent=2))
+            return 0
         order = ProtectedStopService(database, broker, SwingRiskManager(settings, database)).tighten(
             args.trade_id,
             args.broker_stop_order_id,
@@ -440,6 +474,16 @@ def main() -> int:
         lifecycle.mark_closed(args.trade_id, reason_code="CLOSED_MANUAL_RECONCILED", context={"exit_price": args.exit_price})
         print(record.model_dump_json(indent=2))
     return 0
+
+
+def main() -> int:
+    """Run the CLI without exposing local variables or credential-bearing tracebacks."""
+
+    try:
+        return _run()
+    except Exception as exc:
+        print(json.dumps({"status": "ERROR", "error": redact_text(exc)}), file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

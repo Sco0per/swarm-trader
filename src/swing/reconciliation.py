@@ -15,6 +15,7 @@ from .database import SwingDatabase
 from .lifecycle import IllegalLifecycleTransition, PositionLifecycleService
 from .models import PositionLifecycleState, TradeThesis
 from .postmortem import PostmortemEngine
+from .security import redact_text
 
 ACTIVE_ORDER_STATUSES = {"accepted", "new", "pending_new", "partially_filled", "held", "open"}
 TERMINAL_EMPTY_STATUSES = {"canceled", "cancelled", "expired", "rejected", "stopped", "suspended"}
@@ -126,10 +127,12 @@ class BrokerReconciler:
                 pass
         payload: dict[str, Any] = {"reason": reason, "action": "EMERGENCY_CLOSE_REQUESTED"}
         try:
-            close_order = self.broker.close_position(str(trade["ticker"]))
+            from .execution import request_safety_close
+
+            close_order = request_safety_close(self.broker, str(trade["ticker"]))
             payload.update(close_order_id=close_order.broker_order_id, close_status=close_order.status)
         except Exception as exc:
-            payload.update(close_status="FAILED", error=str(exc))
+            payload.update(close_status="FAILED", error=redact_text(exc))
         self.database.record_execution_event(
             intent_id=str(trade.get("intent_id") or f"reconcile-{trade_id}"),
             decision_id=trade.get("decision_id"),

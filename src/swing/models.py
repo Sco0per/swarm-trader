@@ -198,8 +198,6 @@ class TradeProposal(BaseModel):
     invalidation: str
     event_risk: str
     strategy_version: str
-    exceptional_rr_evidence: bool = False
-    requested_risk_pct: float | None = Field(default=None, gt=0)
     reentry_context: dict[str, str] | None = None
 
     @field_validator("ticker")

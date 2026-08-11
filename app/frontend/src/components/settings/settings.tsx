@@ -1,8 +1,8 @@
 import { cn } from '@/lib/utils';
 import { CubeIcon } from '@radix-ui/react-icons';
-import { Key, Palette } from 'lucide-react';
+import { Palette } from 'lucide-react';
 import { useState } from 'react';
-import { ApiKeysSettings, Models } from './';
+import { Models } from './';
 import { ThemeSettings } from './appearance';
 
 interface SettingsProps {
@@ -17,15 +17,9 @@ interface SettingsNavItem {
 }
 
 export function Settings({ className }: SettingsProps) {
-  const [selectedSection, setSelectedSection] = useState('api');
+  const [selectedSection, setSelectedSection] = useState('models');
 
   const navigationItems: SettingsNavItem[] = [
-    {
-      id: 'api',
-      label: 'API Keys',
-      icon: Key,
-      description: 'API endpoints and authentication',
-    },
     {
       id: 'models',
       label: 'Models',
@@ -46,8 +40,6 @@ export function Settings({ className }: SettingsProps) {
         return <Models />;
       case 'theme':
         return <ThemeSettings />;
-      case 'api':
-        return <ApiKeysSettings />;
       default:
         return <Models />;
     }
@@ -93,4 +85,4 @@ export function Settings({ className }: SettingsProps) {
       </div>
     </div>
   );
-} 
+}

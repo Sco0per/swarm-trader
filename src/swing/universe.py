@@ -13,6 +13,7 @@ UNIVERSE_SOURCES = (
     "https://www.nasdaq.com/solutions/global-indexes/nasdaq-100/companies",
 )
 DEFAULT_UNIVERSE_PATH = Path(__file__).resolve().parents[2] / "config" / "universe" / "us_liquid_2026-08-11.csv"
+SUPPORTED_UNLEVERAGED_ETFS = frozenset({"SPY", "QQQ", "IWM", "DIA", "VTI", "VOO", "XLK", "XLC", "XLY", "XLP", "XLF", "XLV", "XLI", "XLE", "XLB", "XLRE", "XLU"})
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,8 @@ def load_universe(path: Path) -> list[UniverseEntry]:
         membership = row["source_membership"].strip()
         if not symbol or symbol in seen or not symbol.replace(".", "").replace("-", "").isalnum() or not sector or security_type not in {"common_stock", "etf"} or not membership:
             raise RuntimeError(f"Universe file contains an invalid or duplicate row for {symbol!r}")
+        if security_type == "etf" and symbol not in SUPPORTED_UNLEVERAGED_ETFS:
+            raise RuntimeError(f"Universe ETF {symbol!r} is not in the maintained unleveraged ETF allowlist")
         seen.add(symbol)
         entries.append(UniverseEntry(symbol, sector, security_type == "etf", membership))
     return entries

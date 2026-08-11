@@ -26,6 +26,15 @@ ENV/
 
 # Environment Variables
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
+service-account*.json
 
 # IDE
 .idea/
@@ -56,6 +65,8 @@ node_modules
 
 # Outputs
 outputs/
+*.log
+crash-dumps/
 
 # Database files (users will have their own local databases)
 *.db

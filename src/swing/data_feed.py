@@ -14,8 +14,7 @@ module has no hard yfinance/network dependency at import time; tests
 monkeypatch ``_yf`` to run fully offline. If earnings lookups also turn out
 to be blocked from the cloud environment, they already degrade safely: a
 failed lookup returns ``None``, and ``market.py`` treats an unknown earnings
-date as a scoring exclusion (not a crash) -- see the ``event_fraction``
-calculation there.
+date as an unavailable safety input and the deterministic validator rejects it.
 
 Per-symbol lookups run concurrently under one shared
 ``EARNINGS_LOOKUP_TIMEOUT_SECONDS`` deadline (see

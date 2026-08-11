@@ -147,33 +147,18 @@ def test_legacy_investor_personality_modules_are_not_imported_by_production_swin
                 assert not node.module.startswith(forbidden_import_prefixes)
 
 
-def test_every_legacy_broker_mutation_primitive_is_hard_disabled_before_network_io():
+def test_legacy_broker_mutation_modules_are_removed_and_only_paper_provider_has_order_endpoint():
     root = Path(__file__).resolve().parents[2]
-    required_raises = {
-        "execute_trades.py": {"flatten_all", "place_order"},
-        "rebalance.py": {"place_sell_order"},
-        "src/alpaca_integration.py": {
-            "_place_alpaca_order",
-            "_place_bracket_order",
-            "flatten_positions",
-            "execute_decisions",
-            "cancel_order",
-            "cancel_all_orders",
-            "_place_limit_order",
-            "_place_stop_order",
-            "_place_trailing_stop",
-            "_place_oco_order",
-        },
-    }
-    for relative, names in required_raises.items():
-        tree = ast.parse((root / relative).read_text(encoding="utf-8"), filename=relative)
-        functions = {node.name: node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
-        assert names <= functions.keys()
-        for name in names:
-            body = functions[name].body
-            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
-                body = body[1:]
-            assert body and isinstance(body[0], ast.Raise), f"{relative}:{name} must raise before any broker I/O"
+    for relative in ("execute_trades.py", "rebalance.py", "run_hedge_fund.py", "run_analysis.py", "src/alpaca_integration.py"):
+        assert not (root / relative).exists()
+    endpoint_files = []
+    for path in root.rglob("*.py"):
+        if any(part in {".git", ".venv", "tests"} for part in path.parts):
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "/orders" in text and any(token in text for token in ('"POST"', '"PATCH"', '"DELETE"', "requests.post", "requests.patch", "requests.delete")):
+            endpoint_files.append(path.relative_to(root).as_posix())
+    assert endpoint_files == ["src/swing/brokers/alpaca.py"]
 
 
 def test_production_decision_and_setup_schemas_have_no_day_short_or_derivative_modes():

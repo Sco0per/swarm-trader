@@ -8,4 +8,4 @@ Before every non-dry submission, `SwingExecutionService` runs the broker reconci
 
 `ProtectedStopService` is the supported amendment path. It checks the durable stop first; `AlpacaPaperProvider.replace_stop()` then reads the current broker leg and independently refuses a lower stop. Missing broker stop data fails closed.
 
-The legacy percentage monitor is disabled and makes no network calls. Legacy scripts that call Alpaca directly are execution-disabled for new entries. Emergency flatten/exit code remains available for responsible risk reduction.
+The former root-level broker scripts and legacy Alpaca integration module were removed. Repository-wide static tests require the Alpaca paper provider to be the only file containing a broker order endpoint. Safety exits use the supported execution/lifecycle/reconciliation boundary; there is no account-wide legacy flatten command.

@@ -1,284 +1,138 @@
 # Swarm Trader
 
-A focused, **long-only, deterministic-risk, AI-assisted swing trading** research and
-paper-trading framework. It exists to test one question: do three clearly defined
-swing setups — `TREND_PULLBACK`, `BREAKOUT_RETEST`, `RELATIVE_STRENGTH_CONTINUATION`
-— have real positive expectancy on an approximately $2,000 paper account?
+Swarm Trader is a focused, long-only, AI-assisted swing-trading research and Alpaca paper-execution framework. Its purpose is to measure whether three deterministic setups have positive expectancy on an approximately $2,000 account. It is not a production or unattended real-money trading system.
 
-LLMs analyze, critique, and propose. Deterministic Python validates the setup,
-controls risk, sizes the position, and decides whether an order is permitted.
-**The LLM is never the risk authority.**
+Python owns setup classification, entry geometry, structural invalidation, target, risk, quantity, portfolio admission, and execution eligibility. Models may critique a valid candidate and veto it; they cannot create a setup, set a price, size a position, loosen a rule, or place an order.
 
-> Day trading, mode switching, shorts, leverage, margin, options, crypto, and
-> leveraged/inverse ETFs are not supported. `src/swing/risk.py` rejects them and
-> there is no configuration that turns them on.
+## Supported architecture
 
----
+The supported package is `src/swing/`, exposed only through `poetry run swing-trader`.
 
-## Status
-
-This is a **research and paper-trading** system under active refactor. It is not
-production-ready and has never been validated against a real broker account.
-
-**Working today**
-
-- Deterministic daily scanner with real setup-geometry classification (`src/swing/market.py`)
-- Deterministic market regime engine (SPY/QQQ trend, slope, realized volatility)
-- Transparent weighted candidate score with a configurable buy threshold
-- Deterministic final risk authority — sizing, halts, freshness, spread, earnings,
-  duplicate-intent, chase, and instrument gates (`src/swing/risk.py`)
-- Whole-share, risk-based position sizing from capital at risk
-- Portfolio combined-open-risk accounting, serialized inside a database transaction
-- Broker-native GTC bracket orders with an idempotent intent key (`src/swing/execution.py`)
-- Mandatory broker reconciliation that fails closed on any mismatch (`src/swing/reconciliation.py`)
-- R-multiple journaling with MFE/MAE and process-quality postmortems
-- Expectancy analytics segmented by setup, regime, sector, and score bucket
-- Durable state in local SQLite or hosted Turso (`src/swing/database.py`)
-- Human-supervised live workflow that computes a ticket but never places an order
-
-**Known gaps — not yet implemented** (tracked in `docs/refactor/01_AUDIT_REPORT.md`)
-
-- No volatility-aware structural stop enforcement: the stop is proposed by the
-  LLM and only geometrically sanity-checked, not required to sit below structure
-  or at an ATR-derived distance
-- No correlation / sector / cluster exposure limits
-- No time stop and no explicit position lifecycle state machine
-- No weekly drawdown halt (only 5% risk-reduction and 8% hard halt)
-- Universe is a hardcoded ~200-symbol list, not a configurable screen
-- No incremental database migrations — the schema version is recorded but never applied
-- No structured logging (reason codes are persisted to the database, not logged)
-- No notification architecture
-- Legacy scripts at the repository root can still reach Alpaca without passing
-  through the swing risk engine — see the audit report's bypass-path section
-
----
-
-## Quick start
-
-```bash
-poetry install
-cp .env.example .env      # then fill in your keys
-
-# Initialize the durable system of record and inspect safety state
-poetry run swing-trader init-db
-poetry run swing-trader status
-
-# Run the test suite
-poetry run pytest
-
-# Scan only — no LLM calls, no broker calls, no orders
-poetry run swing-trader scan
-
-# Review analytics and persist reports
-poetry run swing-trader analytics
-poetry run swing-trader report daily
+```text
+versioned universe + daily bars + broker metadata
+  -> deterministic scanner and setup validator
+  -> strong-candidate LLM review (advisory veto only)
+  -> unchanged deterministic strategy/risk validation
+  -> serialized admission and whole-share Alpaca paper bracket
+  -> broker/database reconciliation
+  -> lifecycle, exit, journal, postmortem, and R analytics
 ```
 
-Safe defaults are `EXECUTION_MODE=paper` and `TRADING_ENABLED=false`. With
-`TRADING_ENABLED=false` the full pipeline runs and logs complete proposals but
-submits nothing.
+The framework supports long U.S. equities and non-leveraged benchmark/sector ETFs only. Unsupported trading styles, short exposure, borrowed exposure, derivatives, digital assets, leveraged/inverse/volatility-linked ETFs, fractional shares, and averaging down have no supported switch or order path.
 
----
+## The three setups
 
-## How it works
+`TREND_PULLBACK` requires an established rising medium/long trend, positive SPY-relative strength, price above the medium average, a controlled pullback near short/medium support, no structural break, bullish continuation confirmation, acceptable ATR, liquidity, event data, and at least 2.0R to the deterministic target.
 
-### Code is the risk authority; models only advise
+`BREAKOUT_RETEST` requires a sufficiently long and tight prior base, a buffered breakout with volume expansion, a controlled retest that holds resistance as support, bullish confirmation, positive trend, acceptable volatility/liquidity/event state, at least 2.0R, and no entry beyond the configured anti-chase ATR extension.
 
-Models (`src/swing/agents.py`, `src/swing/llm_backend.py`) produce *structured
-proposals* — a ticker, a setup type, an entry/stop/target, a bull case, a bear
-case — never a final "do it." Every proposal passes through `src/swing/risk.py`
-and `src/swing/execution.py` before anything reaches a broker.
-`SwingSettings.__post_init__` rejects startup outright if any risk parameter is
-configured looser than its immutable floor. If a model role has no configured
-backend, or returns output that fails schema validation, the result is
-`NO_TRADE` — never a fallback guess.
+`RELATIVE_STRENGTH_CONTINUATION` requires strong stock-versus-SPY strength, nonnegative stock-versus-sector and sector-versus-SPY strength, aligned short/medium/long trends, a tight consolidation with volume contraction, price/volume confirmation, a non-hostile regime, acceptable liquidity/events, and at least 2.0R. Missing sector data rejects the setup.
 
-```
-Alpaca (daily bars) + yfinance (earnings, bounded timeout)
-    │
-    ▼
-DeterministicSwingScanner                     src/swing/market.py
-  scores a liquid universe purely on math — trend, relative strength,
-  volume, setup geometry, event risk. No LLM. Emits ranked candidates.
-    │
-    ▼
-AgentPipeline                                 src/swing/agents.py
-  only candidates already above the score threshold get LLM analysis:
-  technical read, fundamental/event read, bull case, independent red-team
-  bear case with a named checklist, then a portfolio-manager verdict
-    │
-    ▼
-SwingRiskManager → SwingExecutionService      risk.py / execution.py
-  re-reads halts, positions, and open risk from the database on every call;
-  sizes the position from capital at risk; rejects anything over a ceiling
-    │
-    ▼
-Broker
-  Alpaca paper  → autonomous, GTC bracket (entry + stop + target)
-  Robinhood live → human-supervised ticket only; this code never places it
+Every condition is evaluated in `src/swing/strategy.py`. A failed condition has a stable reason code and cannot be rescued by score or model opinion.
+
+## Scanner, universe, and data
+
+The deterministic scanner uses the versioned universe snapshot in `config/universe/`, then applies the required blacklist, security type, existing-holding, price, history, share-volume, dollar-volume, spread, tradability, restriction, halt, freshness, and event filters. Scan results persist the universe/scanner/config versions and rejection funnel.
+
+Alpaca supplies paper-account metadata, daily prices, quotes, and spreads. Earnings lookup is cached and bounded. Missing, stale, malformed, conflicting, or unavailable safety-critical data rejects; there is no optimistic data fallback.
+
+The holdings and wash-sale blacklist is `config/do_not_trade.yaml`. It intentionally ships empty and must be populated before a first paper cycle.
+
+## LLM role
+
+Only deterministically valid `strong` or `very_strong` candidates reach four structured roles: technical context, catalyst/fundamental risk, bear-case critic, and final proposal reviewer. Prompt payloads are explicit allowlists and omit credentials, account identifiers, buying power, broker IDs, and unrelated records.
+
+Model schemas forbid entry, stop, target, quantity, position size, risk percentage, and limit overrides. Malformed output, timeout, unavailable/unconfigured model, unknown ticker, invalid setup, identity mismatch, `REJECT`, or `WATCH` becomes `NO_TRADE`.
+
+## Risk model
+
+Baseline risk is 0.75% of current equity. Python derives the structural stop from the validated setup and requires it to be 0.75–3.00 ATR below the fresh entry quote. Quantity is:
+
+```text
+floor((equity × applied risk percent) / (fresh quote − structural stop))
 ```
 
-### Risk model in one paragraph
+The result is then reduced, never increased, by cash, the 35% position-value ceiling, 2.00% total open risk, 1.50% sector risk, 1.00% cluster risk, and 0.10% of average daily volume. Quantity below one whole share rejects. Buying power cannot exceed cash in the sizing calculation.
 
-Sizing is driven by current broker equity, not a fixed constant. `risk_per_share
-= live quote − technical stop`; `quantity = floor(equity × applied_risk_pct /
-risk_per_share)`, whole shares only. That quantity is then only ever *reduced* by
-cash, buying power, and the maximum-position-exposure ceiling — never increased to
-make a share fit. Normal risk is 0.50%, an explicitly qualified A+ candidate may
-request 0.75%, and 1.00% is a hard maximum. At 5% drawdown risk drops to 0.30%;
-at 8% a durable halt latches and requires a recorded human approval to clear.
-Combined planned open risk across all positions is capped at 2% of equity, which
-is the real constraint on concurrency. Full detail: [docs/RISK_MODEL.md](docs/RISK_MODEL.md).
+Additional gates include a maximum of three open positions, one new position per day and three per week, 4% weekly drawdown halt, 8% portfolio drawdown halt, three-loss halt, global kill switch, five-session earnings exclusion, broader-event clearance, halt/restriction status, 0.50% maximum spread, 0.25R maximum chase, 2.0R minimum initial reward/risk, and duplicate/averaging-down prevention. Latches require explicit human review to clear.
 
-### The daily agent fleet
+## Execution and paper-to-live boundary
 
-The daily cycle is split into five independently scheduled cloud routines, each
-running exactly one `swing-trader` subcommand
-(see [docs/CRON_AGENTS.md](docs/CRON_AGENTS.md)):
+Alpaca paper is the only automated broker provider. An approved entry is one whole-share GTC limit bracket with broker-native stop and target legs. A deterministic client-order ID plus durable serialized reservation prevents duplicates. Partial fills, rejected orders, missing protection, ambiguous timeouts, restarts, and broker/database mismatches are reconciled fail-closed; unresolved truth latches new entries off.
 
-| Agent | Runs | Job |
-|---|---|---|
-| **scan-agent** | 9:35am ET, weekdays | Market scan — candidates only, no LLM, no orders |
-| **decide-trade-agent** | 10:03am ET, weekdays | Re-scans, runs LLM analysis, submits paper orders if `TRADING_ENABLED=true` |
-| **reconcile-agent** | 3:55pm ET, weekdays | Confirms broker state matches the journal; halts on any mismatch |
-| **report-agent** | 4:15pm ET, weekdays | Writes the daily report |
-| **lessons-agent** | Sundays | Aggregates postmortems into candidate hypotheses — never auto-validates |
+Position state follows `OPEN -> PROTECTED -> PROFITABLE -> TRAILING -> EXIT_PENDING -> CLOSED`. Structural-only and structure-then-trail stop policies are named and bounded. Stops never widen. Expected and maximum hold windows are four and ten trading days by default. Manual paper closes are human-approved, idempotent requests followed by reconciliation.
 
-Each routine's blast radius is exactly the one subcommand it is allowed to run.
+Real capital is separate: `live-ticket` runs the same risk engine against a human-supplied snapshot and only prints a validated ticket. A human executes outside this repository. `record-live-fill` requires the unused approval, exact whole-share quantity, acceptable fill geometry, and proof of active stop and target; `record-live-exit` journals the result. No live order-placement endpoint or scheduled live connector exists.
 
-### State: a hosted database, not git
+## Journal, postmortems, and analytics
 
-`SwingDatabase` connects to a hosted Turso (libSQL) database when
-`TURSO_DATABASE_URL` is set, so the kill switch, drawdown and loss-streak halts,
-the trade journal, candidate scores, and lessons all persist across ephemeral
-cloud sandboxes with no save step. With that variable unset it falls back to a
-local SQLite file, so local development and the test suite never touch Turso.
+SQLite is the local durable system of record; Turso/libSQL is optional for ephemeral scheduled environments. Explicit forward migrations preserve existing rows. Entries, fill lots, immutable theses, lifecycle transitions, decisions, rejections, reconciliations, structured logs, notifications, daily bars, postmortems, and reports are durable and idempotent.
 
-### Live trading is human-supervised by design
+R uses actual entry fill risk against the immutable original stop. Partial exits retain the original denominator. Completed daily highs/lows produce MAE/MFE with explicit missing-data observations. Outcome is separate from process quality.
 
-`decide-trade-agent` can run unattended, but only against Alpaca's **paper**
-account. Real money goes through a deliberately non-automatable path:
-`swing-trader live-ticket` runs the same unchanged risk engine against a
-human-typed account snapshot and prints an approved ticket; a human places that
-order themselves; `record-live-fill` / `record-live-exit` journal what actually
-happened. Nothing in this codebase calls a live order-placement endpoint. See
-[docs/ROBINHOOD_MCP.md](docs/ROBINHOOD_MCP.md).
+Analytics report expectancy, winner/loser R, median R, profit factor, cumulative-R drawdown, MAE/MFE, holding time, streaks, funnel losses, and configured benchmark statistics. Results are segmented by setup, regime, sector, score, hold, and volatility. Statistics are withheld below 30 closed trades overall or per segment.
 
----
+## AutoResearch status
+
+`autoresearch/` is quarantined intraday-derived code, not swing-validated research. No production module imports it, and no automatic bridge can promote its output into configuration. Its self-modifying/evolution scripts are not part of the supported workflow. Human review is mandatory for any research promotion. `src/autoresearch_swing/` only records and evaluates hypotheses behind explicit sample and approval gates.
+
+## Scheduling
+
+Validated `America/New_York` schedule settings define deterministic scans at 09:35, 12:30, and 14:30 ET; the change-gated decision cycle at 10:15; position health/reconciliation at 15:45; daily reporting at 16:15; and Sunday lessons aggregation at 18:00. Each scheduled job allowlists exactly one `swing-trader` subcommand. No scheduled job attaches a live provider.
+
+## Configuration and secrets
+
+`.env.example` is the reference template. The supported package reads the process environment; it does not automatically load or create `.env`. `src/swing/config.py` is the single settings model for execution, scanner, setups, regime, risk, events, freshness, liquidity, scheduling, LLM roles, broker mode, and research thresholds. Invalid types and attempts to exceed a hard ceiling/floor fail startup and name the parameter.
+
+Secrets remain boundary-only environment values. They are never included in settings snapshots, prompts, trade rows, logs, notifications, reports, or CLI errors. Persistence recursively redacts sensitive keys and recognized token forms. `.env*`, credentials, private keys, databases, logs, caches, and runtime output are gitignored; `.env.example` is the only exception.
 
 ## Commands
 
 ```bash
-swing-trader init-db                      # Initialize / inspect the system of record
-swing-trader status                       # Kill switches, halts, mode, record counts
-swing-trader scan                         # Deterministic scan; no LLM, no broker writes
-swing-trader run                          # Full daily cycle (paper)
-swing-trader reconcile                    # Reconcile broker truth against the journal
-swing-trader paper-review <intent.json>   # Risk-check a proposal; add --submit to send
-swing-trader tighten-stop <...>           # The only supported stop amendment path
-swing-trader analytics                    # Expectancy-first analytics
-swing-trader report <type>                # daily | weekly | 20-trade | 50-trade | 100-trade | graduation
-swing-trader kill-switch on|off --approved-by <name>
-swing-trader clear-drawdown-halt --approved-by <name>
-swing-trader clear-loss-streak-halt --approved-by <name>
-swing-trader review-observations          # Aggregate postmortems into hypotheses
-swing-trader live-ticket <snapshot.json>  # Compute a live ticket; never places an order
-swing-trader record-live-fill <file>      # Journal a fill a human executed
-swing-trader record-live-exit <id> <price> --reason <text>
+poetry install
+poetry run swing-trader init-db
+poetry run swing-trader status
+poetry run swing-trader scan
+poetry run swing-trader run
+poetry run swing-trader positions
+poetry run swing-trader reconcile
+poetry run swing-trader analytics
+poetry run swing-trader report daily
+poetry run swing-trader report weekly
+poetry run swing-trader paper-review intent.json
+poetry run swing-trader tighten-stop TRADE_ID BROKER_STOP_ORDER_ID NEW_STOP
+poetry run swing-trader close TRADE_ID --approved-by NAME --reason "safety reason"
+poetry run swing-trader live-ticket snapshot.json
+poetry run swing-trader record-live-fill fill.json
+poetry run swing-trader record-live-exit TRADE_ID EXIT_PRICE --reason "broker fill"
 ```
 
----
+`scan`, `status`, `positions`, `analytics`, and reports do not place orders. `run` can place Alpaca paper orders only when `EXECUTION_MODE=paper`, `TRADING_ENABLED=true`, every deterministic gate passes, and reconciliation is clean. `paper-review --submit`, `tighten-stop`, and `close` are explicit paper mutations; review their help and safety state before use.
 
-## Configuration
+## Tests
 
-All settings are environment variables read by `src/swing/config.py`. See
-`.env.example`. Every risk parameter may be made **stricter**; startup fails if
-any is made weaker than its immutable floor.
-
-Model roles (`ANALYST_MODEL`, `PORTFOLIO_MANAGER_MODEL`, `POSTMORTEM_MODEL`,
-`RESEARCH_MODEL`, `MODEL_FALLBACK`) are independently overridable. An empty or
-unavailable role fails to `NO_TRADE`.
-
-`config/do_not_trade.yaml` holds long-term holdings and wash-sale-sensitive
-equivalents that must never be traded. It ships empty and must be populated
-before any real use.
-
----
-
-## Documentation
-
-| Document | Covers |
-|---|---|
-| [docs/ADAPTIVE_SWING_ARCHITECTURE.md](docs/ADAPTIVE_SWING_ARCHITECTURE.md) | Component boundaries and target architecture |
-| [docs/RISK_MODEL.md](docs/RISK_MODEL.md) | Sizing, halts, and every entry gate |
-| [docs/LEARNING_ENGINE.md](docs/LEARNING_ENGINE.md) | Postmortem → observation → hypothesis → human approval |
-| [docs/BROKER_PROVIDERS.md](docs/BROKER_PROVIDERS.md) | Broker abstraction and reconciliation |
-| [docs/CRON_AGENTS.md](docs/CRON_AGENTS.md) | The five scheduled routines and their limitations |
-| [docs/EXPERIMENT_PROTOCOL.md](docs/EXPERIMENT_PROTOCOL.md) | The $2,000 experiment and graduation criteria |
-| [docs/PAPER_TO_LIVE_CHECKLIST.md](docs/PAPER_TO_LIVE_CHECKLIST.md) | What must be true before real money |
-| [docs/EMERGENCY_PROCEDURES.md](docs/EMERGENCY_PROCEDURES.md) | Halting, reconciling, and clearing latches |
-| [docs/REMEDIATION_STATUS.md](docs/REMEDIATION_STATUS.md) | Prior audit remediation and what remains blocked |
-| [docs/AUTORESEARCH_SWING.md](docs/AUTORESEARCH_SWING.md) | Swing hypothesis validation and the human promotion gate |
-| [docs/ROBINHOOD_MCP.md](docs/ROBINHOOD_MCP.md) | Why live order placement is never automated |
-| [docs/REFACTOR_RULES.md](docs/REFACTOR_RULES.md) | Standing rules for the ongoing refactor |
-| [docs/refactor/](docs/refactor/) | Per-prompt audit and refactor reports |
-
----
-
-## Repository layout
-
-```
-src/swing/                 The production package — the only supported path
-  market.py                Deterministic scanner, regime engine, setup classification
-  risk.py                  Final deterministic risk authority
-  execution.py             Idempotent review → admission → submission
-  reconciliation.py        Broker/database truth reconciliation, fails closed
-  stops.py                 The only supported stop-amendment boundary
-  brokers/                 BrokerProvider + Alpaca paper, fake, human-supervised
-  config.py  models.py  database.py  universe.py  data_feed.py
-  agents.py  llm_backend.py  postmortem.py  analytics.py  reporting.py
-src/autoresearch_swing/    Swing hypothesis records, fitness, human promotion gate
-tests/swing/               Swing test suite — no test makes a network call
-docs/                      Current documentation
-docs/archive/              Pre-refactor documents, historical reference only
-autoresearch/              QUARANTINED intraday experiment — see autoresearch/README.md
-app/                       Legacy FastAPI/React research UI for the personality swarm
-src/agents/ src/backtesting/ src/tools/   Legacy imported hedge-fund research code
-*.py (repository root)     Legacy operational scripts — not the swing path
+```bash
+poetry run pytest
+poetry run black --check src/swing tests/swing
+poetry run isort --check-only src/swing tests/swing
+poetry run flake8 src/swing tests/swing --max-line-length=420 --extend-ignore=E203
+npx --no-install pyright
 ```
 
----
+Tests mock every broker, LLM, market-data, earnings, and hosted-database boundary. No test requires credentials or network access.
 
-## Historical Note
+## Before any paper cycle
 
-This repository began as a fork of
-[virattt/ai-hedge-fund](https://github.com/virattt/ai-hedge-fund) and was
-extended into a dual-mode (swing + intraday day trading) system with ~20
-investor-personality LLM agents, autonomous mode switching via a
-`trading_mode.json` steering file, separate day/swing Alpaca accounts, short
-selling, leveraged-ETF exposure, and an overnight strategy-evolution loop
-(`autoresearch/`). That architecture was abandoned: it was unfalsifiable, its
-risk limits were advisory rather than enforced, and it let LLM discretion set
-position size.
+1. Use Python 3.11–3.13 and complete `poetry install`; initialize a fresh local database and run the full validation suite.
+2. Populate and review `config/do_not_trade.yaml`, then verify the versioned universe, earnings, broader-event, and real-time halt data are complete and fresh.
+3. Perform credentialed read-only Alpaca QA, then manually verify paper bracket, partial-fill, stop/target, timeout, restart, and reconciliation payload behavior before enabling paper submission.
 
-The current system replaces all of it with three explicit setups, deterministic
-risk code that no model output can weaken, and a single long-only paper
-execution path. Documents describing the predecessor now live in
-[docs/archive/](docs/archive/) and `autoresearch/`; they are provenance, **not
-operating instructions**, and their commands, risk numbers, and cron examples are
-not supported. The legacy code still present under `src/agents/`,
-`src/backtesting/`, `app/`, and the repository root is retained as reference and
-is not invoked by the swing path — removing it is tracked in
-`docs/refactor/01_AUDIT_REPORT.md`.
+Until those checks pass, the honest readiness verdict is **not ready for a first autonomous paper cycle**.
 
----
+## Safety philosophy
 
-## Disclaimer
+Unknown is not safe. Missing data rejects. Models can veto but cannot authorize. Risk is based on the immutable original structure. Whole-share rounding never increases risk. Broker truth is reconciled before trust. Live execution remains human-only. A control that reduces trade count is evidence of the framework working, not a reason to remove it.
 
-This project is for education and research. It is not financial advice, has not
-been validated against a live broker, and comes with no warranty. Do not commit
-real capital to it. You are solely responsible for anything you run.
+Historical provenance: this repository began as an AI hedge-fund/personality-agent project and later carried multiple trading styles. Those components are retained only where needed for provenance or isolated research; the operational framework described above is the sole supported system.
 
-## License
-
-MIT — see the upstream project for the original terms.
+This project is research software, not financial advice.

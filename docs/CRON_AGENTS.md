@@ -114,12 +114,11 @@ of the routine's own model.
   `src/swing/data_feed.py` is bounded to an 8-second-per-symbol timeout and
   degrades to "unknown, treat conservatively" on failure rather than
   crashing or hanging the whole scan. If Yahoo also blocks this specific
-  endpoint, individual-stock scoring loses earnings-exclusion precision
-  (ETF candidates are unaffected) — a dedicated earnings-calendar API would
-  be the real fix if this turns out to matter in practice.
-- **Secrets aren't really secret.** `ANTHROPIC_API_KEY` / `ALPACA_API_KEY` /
+  endpoint, individual-stock candidates fail closed rather than losing
+  earnings-exclusion precision. A dedicated earnings-calendar API is required.
+- **The environment box is not a secrets vault.** `ANTHROPIC_API_KEY` / `ALPACA_API_KEY` /
   `ALPACA_API_SECRET` / `TURSO_AUTH_TOKEN` live in the cloud environment's
   plain "Environment variables" box, not a real secrets vault — the UI
   itself warns these are visible to anything running in the environment.
-  Accepted as a reasonable tradeoff here (paper trading, revocable keys),
-  but don't treat that box as secure storage.
+  Do not enable paper submission there until access controls, masking, rotation,
+  and least-privilege paper-only credentials have been reviewed.

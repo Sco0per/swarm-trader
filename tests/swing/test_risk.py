@@ -104,8 +104,8 @@ def test_minimum_reward_risk(settings, database, proposal, candidate, quote, por
     bad_candidate = candidate.model_copy(update={"resistance": 107})
     result = review(settings, database, proposal, bad_candidate, quote, portfolio)
     assert not result.approved and result.rule == "minimum_rr"
-    exceptional = proposal.model_copy(update={"exceptional_rr_evidence": True})
-    assert not review(settings, database, exceptional, bad_candidate, quote, portfolio, "intent-2").approved
+    with pytest.raises(ValueError):
+        proposal.__class__.model_validate({**proposal.model_dump(mode="json"), "exceptional_rr_evidence": True})
 
 
 @pytest.mark.parametrize(("days", "rule"), [(5, "earnings_exclusion"), (None, "earnings_unknown")])

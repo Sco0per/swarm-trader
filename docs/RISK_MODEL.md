@@ -1,19 +1,19 @@
 # Risk Model
 
-The account's current broker equity—not a fixed $2,000 constant—drives all sizing. The technical invalidation is selected first. For a long entry:
+Current broker equity, not a fixed account constant, drives all sizing. For a validated long entry:
 
 ```text
-risk_per_share = live_entry_quote - technical_stop
-allowed_dollar_risk = current_equity * applied_risk_pct
-quantity = floor(allowed_dollar_risk / risk_per_share)
+risk_per_share = fresh_quote - deterministic_structural_stop
+allowed_risk = equity × applied_risk_percent
+risk_quantity = floor(allowed_risk / risk_per_share)
 ```
 
-Normal risk is 0.50%. An explicitly qualified A+ candidate (score and confidence at least 90 in a bull/strong-bull regime) may request up to 0.75%. The absolute hard maximum is 1.00%. Configuration may make these and the aggregate limits stricter, but cannot weaken them. At 5% drawdown normal risk falls to 0.30%. At 8%, the new-entry halt latches in SQLite and requires a human-recorded review to clear. Three consecutive completed losses also latch a review halt; a later winner cannot implicitly clear it.
+Baseline risk is 0.75%. Models and operator intent files have no risk-override field. Regime and drawdown controls may only reduce that baseline; the defense-in-depth absolute maximum is immutable at 1.00%. At 5% portfolio drawdown applied risk falls to 0.30%. A 4% weekly drawdown, 8% portfolio drawdown, or three consecutive losses latches a halt requiring human review.
 
-The calculated quantity is only reduced by cash, buying power, 35% maximum exposure, and portfolio limits; it is never increased to make a share fit. Combined planned open risk is at most 2% of equity. The system permits three positions, one new position per day, and three per week. Zero trades is valid.
+The whole-share risk quantity is reduced, never increased, by `min(cash, buying_power)`, 35% position value, 2.00% combined open risk, 1.50% sector risk, 1.00% cluster risk, and 0.10% of ADV. The system permits three open positions, one new position per day, and three per week. Quantity below one whole share rejects.
 
-Entry validation also requires a score of 80, fresh bid/ask data, price above $5, average daily volume above 1,000,000, acceptable spread, no halt, known earnings distance beyond five trading days for stocks, an approved setup, and normally at least 2R structural reward. The 1.5–2R exception requires previously validated exact-context evidence.
+Entry validation also requires a deterministic valid setup, score at least 80, a structural stop 0.75–3.00 ATR below the fresh quote, at least 2.0R, price at least $5, at least one million shares and $20 million average daily volume, spread no wider than 0.50%, chase no greater than 0.25R, explicit broker tradability/restriction/halt state, fresh quote/asset/clock/bar/event data, earnings more than five trading sessions away for stocks, and explicit broader-event clearance. There is no lower-R exception.
 
-Leveraged/inverse/volatility ETFs, shorts, margin, blacklisted holdings, duplicate intents, adds, averaging down, chasing beyond 0.25R, and unsuitable regimes are rejected. Future timestamps are rejected as well as stale ones. A long stop may remain unchanged or rise; it can never move down. The durable stop service and broker provider both enforce that invariant. Exits and protective risk reduction remain possible during a halt.
+Unsupported instruments, non-long decisions, blacklisted holdings, duplicate intents, existing/pending same-symbol positions, averaging down, missing cluster mapping, hostile regimes, and stale or future-dated data reject. A stop may remain unchanged or rise; it can never move down.
 
-Every non-dry entry requires a clean broker reconciliation. Unknown outcomes, untracked positions, untracked orders, and unverifiable closures latch an entry halt. Final admission occurs inside a serialized SQLite write transaction so concurrent decisions cannot independently pass stale daily, weekly, position, or combined-risk counts.
+Every paper submission requires clean broker reconciliation. Unknown outcomes, untracked positions/orders, missing protection, and unverifiable closes latch new entries off. Final admission is serialized in the database and rechecks daily/weekly counts plus portfolio, sector, and cluster risk.
