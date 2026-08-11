@@ -80,6 +80,47 @@ Analytics report expectancy, winner/loser R, median R, profit factor, cumulative
 
 Validated `America/New_York` schedule settings define deterministic scans at 09:35, 12:30, and 14:30 ET; the change-gated decision cycle at 10:15; position health/reconciliation at 15:45; daily reporting at 16:15; and Sunday lessons aggregation at 18:00. Each scheduled job allowlists exactly one `swing-trader` subcommand. No scheduled job attaches a live provider.
 
+## Automation & agent topology
+
+The five schedule slots above are not one long-running process — each is an independent scheduled cloud agent: its own isolated sandbox, its own fresh clone of `main`, allow-listed to exactly one `swing-trader` subcommand, and (aside from the reconciliation halt it may set) forbidden from editing `src/`, `tests/`, `docs/`, or `config/`. Agents never message each other directly; all coordination is indirect, through the hosted database.
+
+```mermaid
+flowchart LR
+    GH[("GitHub main")]
+    DB[("Hosted DB\nTurso/libSQL")]
+    ALPACA[("Alpaca\npaper broker")]
+    CLAUDE[("Anthropic API\nadvisory veto only")]
+
+    GH -->|git pull, read-only| SCAN
+    GH -->|git pull, read-only| DECIDE
+    GH -->|git pull, read-only| RECON
+    GH -->|git pull, read-only| REPORT
+    GH -->|git pull, read-only| LESSON
+
+    SCAN["scan-agent\nswing-trader scan"] -->|writes candidates| DB
+    DB -->|candidates| DECIDE
+    DECIDE["decide-trade-agent\nswing-trader run"] -->|strong / very_strong only| CLAUDE
+    CLAUDE -->|advisory veto, never sizes or prices| DECIDE
+    DECIDE -->|writes decisions & positions| DB
+    DECIDE -->|paper bracket order, gated by\nEXECUTION_MODE=paper and TRADING_ENABLED=true| ALPACA
+
+    ALPACA -->|fills & positions| RECON["reconcile-agent\nswing-trader reconcile"]
+    RECON -->|compares vs journal, sets reconciliation_halt| DB
+
+    DB -->|reads| REPORT["report-agent\nswing-trader report daily"]
+    DB -->|postmortems| LESSON["lessons-agent\nswing-trader review-observations"]
+    LESSON -->|writes candidate hypotheses| DB
+
+    FIX["one-off maintenance job\ne.g. poetry.lock repair"]
+    GH -->|git pull| FIX
+    FIX -->|"repo write via GitHub MCP tool only\n(direct git push is blocked by\nthe sandbox egress policy)"| GH
+```
+
+Two distinct kinds of automation write to two distinct places, and neither can touch the other's target:
+
+- **Trading agents** (`scan`, `run`, `reconcile`, `report`, `review-observations`) read code from GitHub but only ever write to the hosted database or, for `run` alone, to Alpaca's paper broker under an explicit environment gate. None of them has repo-write access, so a misbehaving trading agent cannot alter its own code or config.
+- **Maintenance jobs** (one-off fix jobs such as the `poetry.lock` regeneration after a dependency cleanup) do the opposite: they edit the repo and touch neither the trading database nor the broker. Their sandbox blocks a plain `git push` to GitHub outright (the egress proxy returns `403` regardless of credentials); a repo write has to go through the GitHub MCP tool (`create_or_update_file` / `push_files`) instead, with a byte-for-byte hash check afterward since a single corrupted character in a lockfile is worse than no fix at all.
+
 ## Configuration and secrets
 
 `.env.example` is the reference template. The supported package reads the process environment; it does not automatically load or create `.env`. `src/swing/config.py` is the single settings model for execution, scanner, setups, regime, risk, events, freshness, liquidity, scheduling, LLM roles, broker mode, and research thresholds. Invalid types and attempts to exceed a hard ceiling/floor fail startup and name the parameter.
@@ -136,3 +177,7 @@ Unknown is not safe. Missing data rejects. Models can veto but cannot authorize.
 Historical provenance: this repository began as an AI hedge-fund/personality-agent project and later carried multiple trading styles. Those earlier components have been removed; the operational framework described above is the sole supported system. Provenance is recoverable via `docs/refactor/01_AUDIT_REPORT.md` and git history.
 
 This project is research software, not financial advice.
+
+## License
+
+All rights reserved — see [LICENSE](LICENSE). Public visibility is for reference only and does not grant permission to use, copy, or redistribute this code.
