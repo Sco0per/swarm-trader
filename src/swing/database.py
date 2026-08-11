@@ -33,6 +33,7 @@ from .models import (
     SwingCandidate,
     TradeThesis,
 )
+from .security import redact_sensitive, redact_text
 
 
 def _turso_serverless():
@@ -41,7 +42,7 @@ def _turso_serverless():
     return turso_serverless
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 DDL = """
@@ -440,12 +441,179 @@ CREATE INDEX IF NOT EXISTS idx_reconciliation_mismatches_status ON reconciliatio
 """
 
 
+JOURNAL_DDL = """
+CREATE TABLE IF NOT EXISTS decision_records (
+    decision_record_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    subject_type TEXT NOT NULL CHECK(subject_type IN ('CANDIDATE','REJECTION','TRADE','LLM')),
+    subject_id TEXT,
+    ticker TEXT,
+    reason_code TEXT NOT NULL,
+    strategy_version TEXT NOT NULL,
+    config_version TEXT NOT NULL,
+    scanner_version TEXT NOT NULL,
+    model_name TEXT,
+    prompt_version TEXT,
+    market_data_timestamp TEXT,
+    feature_values_json TEXT NOT NULL,
+    entry_score REAL,
+    risk_settings_snapshot_json TEXT NOT NULL,
+    decision_json TEXT NOT NULL,
+    decision_fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(run_id, subject_type, decision_fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_decision_why_not_trade
+    ON decision_records(ticker, created_at, reason_code);
+CREATE INDEX IF NOT EXISTS idx_decision_fingerprint
+    ON decision_records(decision_fingerprint);
+CREATE TABLE IF NOT EXISTS llm_review_state (
+    candidate_key TEXT NOT NULL,
+    role TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    last_score REAL NOT NULL,
+    material_context_hash TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(candidate_key, role, model_name, prompt_version)
+);
+CREATE TABLE IF NOT EXISTS llm_cycles (
+    cycle_id TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    actual_calls INTEGER NOT NULL DEFAULT 0,
+    suppressed_calls INTEGER NOT NULL DEFAULT 0,
+    reason_counts_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS notifications (
+    notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    title TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    dedupe_key TEXT UNIQUE,
+    delivery_status TEXT NOT NULL DEFAULT 'PENDING'
+);
+CREATE TABLE IF NOT EXISTS structured_logs (
+    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at TEXT NOT NULL,
+    level TEXT NOT NULL,
+    event TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    ticker TEXT,
+    decision_id TEXT,
+    trade_id TEXT,
+    context_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_logs_why_not_trade
+    ON structured_logs(ticker, occurred_at, reason_code);
+CREATE TABLE IF NOT EXISTS persisted_reports (
+    report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_type TEXT NOT NULL,
+    generated_at TEXT NOT NULL,
+    strategy_version TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    UNIQUE(report_type, generated_at)
+);
+CREATE VIEW IF NOT EXISTS closed_trade_journal AS
+SELECT
+    ticker,
+    setup_type,
+    entry_datetime AS entry_timestamp,
+    exit_datetime AS exit_timestamp,
+    holding_period_days AS days_held,
+    entry_price,
+    exit_price,
+    initial_stop,
+    initial_target,
+    candidate_score AS entry_score,
+    market_regime,
+    sector,
+    risk_cluster,
+    initial_risk_dollars AS initial_R_dollars,
+    realized_r AS realized_R,
+    mae_r AS MAE_R,
+    mfe_r AS MFE_R,
+    entry_slippage,
+    exit_slippage,
+    reason_exit AS exit_reason,
+    earnings_distance_at_entry,
+    technical_invalidation_reason,
+    llm_verdict AS LLM_verdict,
+    risk_rejection_history_json AS risk_rejection_history
+FROM trades WHERE status='CLOSED';
+"""
+
+
+MIGRATION_6_COLUMNS: dict[str, dict[str, str]] = {
+    "candidate_scores": {
+        "strategy_version": "TEXT",
+        "config_version": "TEXT",
+        "scanner_version": "TEXT",
+        "feature_values_json": "TEXT NOT NULL DEFAULT '{}'",
+        "decision_fingerprint": "TEXT",
+    },
+    "trades": {
+        "initial_target": "REAL",
+        "initial_risk_dollars": "REAL",
+        "unrealized_r": "REAL",
+        "entry_slippage": "REAL",
+        "exit_slippage": "REAL",
+        "earnings_distance_at_entry": "INTEGER",
+        "technical_invalidation_reason": "TEXT",
+        "llm_verdict": "TEXT",
+        "risk_rejection_history_json": "TEXT NOT NULL DEFAULT '[]'",
+        "config_version": "TEXT",
+        "scanner_version": "TEXT",
+        "model_name": "TEXT",
+        "prompt_version": "TEXT",
+        "market_data_timestamp": "TEXT",
+        "feature_values_json": "TEXT NOT NULL DEFAULT '{}'",
+        "risk_settings_snapshot_json": "TEXT NOT NULL DEFAULT '{}'",
+        "risk_cluster": "TEXT",
+        "volatility_bucket": "TEXT",
+        "process_quality_score": "REAL",
+        "outcome": "TEXT",
+    },
+    "trade_snapshots": {
+        "high": "REAL",
+        "low": "REAL",
+        "unrealized_r": "REAL",
+        "mfe_r": "REAL",
+        "mae_r": "REAL",
+    },
+    "agent_decisions": {
+        "strategy_version": "TEXT",
+        "config_version": "TEXT",
+        "scanner_version": "TEXT",
+        "prompt_version": "TEXT",
+        "input_json": "TEXT NOT NULL DEFAULT '{}'",
+        "input_fingerprint": "TEXT",
+        "cycle_id": "TEXT",
+        "call_disposition": "TEXT NOT NULL DEFAULT 'CALLED'",
+    },
+    "postmortems": {
+        "process_quality_score": "REAL",
+        "outcome": "TEXT",
+        "mechanical_answers_json": "TEXT NOT NULL DEFAULT '{}'",
+        "narrative": "TEXT",
+    },
+}
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def _json(value: Any) -> str:
-    return json.dumps(value, default=str, sort_keys=True)
+    return json.dumps(redact_sensitive(value), default=str, sort_keys=True)
+
+
+def _safe(value: Any) -> str:
+    return redact_text(value)
 
 
 class SwingDatabase:
@@ -458,6 +626,7 @@ class SwingDatabase:
         self.integrity_errors: tuple[type[Exception], ...] = (sqlite3.IntegrityError,)
         if self.turso_url:
             self.integrity_errors = (sqlite3.IntegrityError, _turso_serverless().IntegrityError)
+        self.strategy_version = "SWING_V1.0"
 
     @contextmanager
     def connect(self) -> Iterator[Any]:
@@ -480,8 +649,21 @@ class SwingDatabase:
             connection.close()
 
     def initialize(self, strategy_version: str = "SWING_V1.0") -> None:
+        self.strategy_version = strategy_version
         with self.connect() as connection:
             connection.executescript(DDL)
+            existing = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+            if existing is None:
+                # DDL above is the historical v5 baseline. Fresh databases start
+                # there and then exercise the same forward migration as populated ones.
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES(5, ?)",
+                    (_now(),),
+                )
+                existing = 5
+            if int(existing) < 6:
+                self._migrate_v6(connection)
+            connection.executescript(JOURNAL_DDL)
             connection.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
                 (SCHEMA_VERSION, _now()),
@@ -513,6 +695,21 @@ class SwingDatabase:
                 (_now(),),
             )
 
+    @staticmethod
+    def _table_columns(connection: Any, table: str) -> set[str]:
+        cursor = connection.execute(f"SELECT * FROM {table} LIMIT 0")
+        return {str(column[0]) for column in (cursor.description or ())}
+
+    def _migrate_v6(self, connection: Any) -> None:
+        """Forward-only journal/measurement migration; safe on populated v5 DBs."""
+
+        for table, additions in MIGRATION_6_COLUMNS.items():
+            present = self._table_columns(connection, table)
+            for column, declaration in additions.items():
+                if column not in present:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+        connection.executescript(JOURNAL_DDL)
+
     def set_state(self, key: str, value: Any, updated_by: str) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -534,8 +731,15 @@ class SwingDatabase:
             )
             connection.execute(
                 "INSERT INTO halt_events(occurred_at,halt_key,active,reason,source) VALUES(?,?,1,?,?)",
-                (now, key, reason, source),
+                (now, key, _safe(reason), source),
             )
+            if key == "kill_switch":
+                connection.execute(
+                    """INSERT OR IGNORE INTO notifications
+                       (created_at,event_type,severity,title,reason_code,payload_json,dedupe_key)
+                       VALUES(?,'KILL_SWITCH_ACTIVATED','CRITICAL','Kill switch activated','KILL_SWITCH_ACTIVATED',?,?)""",
+                    (now, _json({"reason": reason, "source": source}), f"kill-switch:{now}"),
+                )
 
     def get_state(self, key: str, default: Any = None) -> Any:
         with self.connect() as connection:
@@ -573,20 +777,47 @@ class SwingDatabase:
                     (symbol, trading_days, now),
                 )
 
-    def record_candidate(self, candidate: SwingCandidate, disposition: str = "EVALUATED", rejection_reason: str | None = None) -> None:
+    def record_candidate(
+        self,
+        candidate: SwingCandidate,
+        disposition: str = "EVALUATED",
+        rejection_reason: str | None = None,
+        *,
+        strategy_version: str | None = None,
+        config_version: str | None = None,
+        scanner_version: str | None = None,
+    ) -> None:
         payload = candidate.model_dump(mode="json")
+        decision_fingerprint = sha256(
+            _json(
+                {
+                    "ticker": candidate.ticker,
+                    "setup_type": candidate.setup_type.value,
+                    "score": candidate.score,
+                    "features": candidate.validator_features,
+                    "strategy_version": strategy_version or self.strategy_version,
+                    "config_version": config_version,
+                    "scanner_version": scanner_version,
+                    "disposition": disposition,
+                    "rejection_reason": rejection_reason,
+                }
+            ).encode("utf-8")
+        ).hexdigest()
         with self.connect() as connection:
             connection.execute(
                 """INSERT INTO candidate_scores
                    (candidate_id,evaluated_at,ticker,setup_type,score,score_components_json,disposition,
-                    rejection_reason,market_regime,sector,sector_etf,context_json,data_source,retrieved_at,market_timestamp)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    rejection_reason,market_regime,sector,sector_etf,context_json,data_source,retrieved_at,market_timestamp,
+                    strategy_version,config_version,scanner_version,feature_values_json,decision_fingerprint)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(candidate_id) DO UPDATE SET
                      evaluated_at=excluded.evaluated_at, score=excluded.score,
                      score_components_json=excluded.score_components_json, disposition=excluded.disposition,
                      rejection_reason=excluded.rejection_reason, context_json=excluded.context_json,
                      data_source=excluded.data_source, retrieved_at=excluded.retrieved_at,
-                     market_timestamp=excluded.market_timestamp""",
+                     market_timestamp=excluded.market_timestamp,strategy_version=excluded.strategy_version,
+                     config_version=excluded.config_version,scanner_version=excluded.scanner_version,
+                     feature_values_json=excluded.feature_values_json,decision_fingerprint=excluded.decision_fingerprint""",
                 (
                     candidate.candidate_id,
                     _now(),
@@ -603,8 +834,75 @@ class SwingDatabase:
                     candidate.data.source,
                     candidate.data.retrieved_at.isoformat(),
                     candidate.data.market_timestamp.isoformat() if candidate.data.market_timestamp else None,
+                    strategy_version or self.strategy_version,
+                    config_version,
+                    scanner_version,
+                    _json({**candidate.validator_features, "score_components": candidate.score_components}),
+                    decision_fingerprint,
                 ),
             )
+
+    def record_decision(
+        self,
+        *,
+        run_id: str,
+        subject_type: str,
+        subject_id: str | None,
+        ticker: str | None,
+        reason_code: str,
+        strategy_version: str,
+        config_version: str,
+        scanner_version: str,
+        model_name: str | None,
+        prompt_version: str | None,
+        market_data_timestamp: str | None,
+        feature_values: dict[str, Any],
+        entry_score: float | None,
+        risk_settings_snapshot: dict[str, Any],
+        decision: dict[str, Any],
+        decision_fingerprint: str,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO decision_records
+                   (run_id,subject_type,subject_id,ticker,reason_code,strategy_version,config_version,
+                    scanner_version,model_name,prompt_version,market_data_timestamp,feature_values_json,
+                    entry_score,risk_settings_snapshot_json,decision_json,decision_fingerprint,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    run_id,
+                    subject_type,
+                    subject_id,
+                    ticker,
+                    reason_code,
+                    strategy_version,
+                    config_version,
+                    scanner_version,
+                    model_name,
+                    prompt_version,
+                    market_data_timestamp,
+                    _json(feature_values),
+                    entry_score,
+                    _json(risk_settings_snapshot),
+                    _json(decision),
+                    decision_fingerprint,
+                    _now(),
+                ),
+            )
+
+    def why_not_trade(self, ticker: str, date_prefix: str) -> list[dict[str, Any]]:
+        """Answer the operational question without re-running a scan."""
+
+        return self.rows(
+            """SELECT created_at,subject_type,reason_code,feature_values_json,decision_json
+               FROM decision_records WHERE ticker=? AND created_at LIKE ?
+               UNION ALL
+               SELECT occurred_at AS created_at,'RISK' AS subject_type,reason_code,
+                      context_json AS feature_values_json,'{}' AS decision_json
+               FROM structured_logs WHERE ticker=? AND occurred_at LIKE ?
+               ORDER BY created_at""",
+            (ticker.upper(), f"{date_prefix}%", ticker.upper(), f"{date_prefix}%"),
+        )
 
     def record_agent_decision(
         self,
@@ -622,13 +920,23 @@ class SwingDatabase:
         prompt_tokens: int | None = None,
         completion_tokens: int | None = None,
         estimated_cost: float | None = None,
+        strategy_version: str | None = None,
+        config_version: str | None = None,
+        scanner_version: str | None = None,
+        prompt_version: str | None = None,
+        input_payload: dict[str, Any] | None = None,
+        input_fingerprint: str | None = None,
+        cycle_id: str | None = None,
+        call_disposition: str = "CALLED",
     ) -> None:
         with self.connect() as connection:
             connection.execute(
                 """INSERT INTO agent_decisions
                    (agent_decision_id,candidate_id,trade_id,role,model_name,schema_version,decision,payload_json,
-                    validation_status,validation_error,prompt_tokens,completion_tokens,estimated_cost,created_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    validation_status,validation_error,prompt_tokens,completion_tokens,estimated_cost,created_at,
+                    strategy_version,config_version,scanner_version,prompt_version,input_json,input_fingerprint,
+                    cycle_id,call_disposition)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     agent_decision_id,
                     candidate_id,
@@ -639,12 +947,86 @@ class SwingDatabase:
                     decision,
                     _json(payload),
                     validation_status,
-                    validation_error,
+                    _safe(validation_error) if validation_error else None,
                     prompt_tokens,
                     completion_tokens,
                     estimated_cost,
                     _now(),
+                    strategy_version or self.strategy_version,
+                    config_version,
+                    scanner_version,
+                    prompt_version,
+                    _json(input_payload or {}),
+                    input_fingerprint,
+                    cycle_id,
+                    call_disposition,
                 ),
+            )
+
+    def get_llm_review_state(self, candidate_key: str, role: str, model_name: str, prompt_version: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM llm_review_state
+                   WHERE candidate_key=? AND role=? AND model_name=? AND prompt_version=?""",
+                (candidate_key, role, model_name, prompt_version),
+            ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["response"] = json.loads(result.pop("response_json"))
+        return result
+
+    def save_llm_review_state(
+        self,
+        *,
+        candidate_key: str,
+        role: str,
+        model_name: str,
+        prompt_version: str,
+        score: float,
+        material_context_hash: str,
+        response: dict[str, Any],
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO llm_review_state
+                   (candidate_key,role,model_name,prompt_version,last_score,material_context_hash,response_json,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?)
+                   ON CONFLICT(candidate_key,role,model_name,prompt_version) DO UPDATE SET
+                     last_score=excluded.last_score,material_context_hash=excluded.material_context_hash,
+                     response_json=excluded.response_json,updated_at=excluded.updated_at""",
+                (
+                    candidate_key,
+                    role,
+                    model_name,
+                    prompt_version,
+                    score,
+                    material_context_hash,
+                    _json(response),
+                    _now(),
+                ),
+            )
+
+    def start_llm_cycle(self, cycle_id: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO llm_cycles(cycle_id,started_at) VALUES(?,?)",
+                (cycle_id, _now()),
+            )
+
+    def finish_llm_cycle(
+        self,
+        cycle_id: str,
+        *,
+        actual_calls: int,
+        suppressed_calls: int,
+        reason_counts: dict[str, int],
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """UPDATE llm_cycles SET completed_at=?,actual_calls=?,suppressed_calls=?,reason_counts_json=?
+                   WHERE cycle_id=?""",
+                (_now(), actual_calls, suppressed_calls, _json(reason_counts), cycle_id),
             )
 
     def record_violation(
@@ -693,8 +1075,20 @@ class SwingDatabase:
                     intent_id,
                     _json(candidate or {}),
                     _json(computed_values or {}),
-                    reason,
+                    _safe(reason),
                 ),
+            )
+            connection.execute(
+                """INSERT INTO structured_logs
+                   (occurred_at,level,event,reason_code,ticker,decision_id,context_json)
+                   VALUES(?,'INFO','TRADE_REJECTED_BY_RISK',?,?,?,?)""",
+                (_now(), reason_code, ticker, decision_id, _json({"rule": rule, "computed_values": computed_values or {}})),
+            )
+            connection.execute(
+                """INSERT INTO notifications
+                   (created_at,event_type,severity,title,reason_code,payload_json,dedupe_key)
+                   VALUES(?,'TRADE_REJECTED_BY_RISK','INFO',?,?,?,NULL)""",
+                (_now(), f"Risk rejected {ticker or 'candidate'}", reason_code, _json({"ticker": ticker, "rule": rule})),
             )
 
     def record_risk_snapshot(
@@ -741,6 +1135,16 @@ class SwingDatabase:
             "quantity_rounding_to_zero": {"count": len(grouped["REJECT_QTY_ZERO"]), "candidates": grouped["REJECT_QTY_ZERO"]},
             "insufficient_cash": {"count": len(grouped["REJECT_INSUFFICIENT_CASH"]), "candidates": grouped["REJECT_INSUFFICIENT_CASH"]},
         }
+
+    def risk_rejection_history_for(self, ticker: str, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self.rows(
+            """SELECT occurred_at,reason_code,rule,computed_values_json,reason
+               FROM risk_rejections WHERE ticker=? ORDER BY occurred_at DESC LIMIT ?""",
+            (ticker.upper(), limit),
+        )
+        for row in rows:
+            row["computed_values"] = json.loads(row.pop("computed_values_json"))
+        return rows
 
     def record_execution_event(
         self,
@@ -941,6 +1345,11 @@ class SwingDatabase:
         if missing:
             raise ValueError(f"Missing trade fields: {', '.join(missing)}")
         record = dict(values)
+        record.setdefault("initial_target", record.get("target"))
+        record.setdefault("initial_risk_dollars", record.get("planned_dollar_risk"))
+        record.setdefault("risk_rejection_history_json", "[]")
+        record.setdefault("feature_values_json", "{}")
+        record.setdefault("risk_settings_snapshot_json", "{}")
         record.setdefault("created_at", _now())
         record.setdefault("updated_at", record["created_at"])
         columns = list(record)
@@ -950,6 +1359,18 @@ class SwingDatabase:
                 f"INSERT INTO trades ({','.join(columns)}) VALUES ({placeholders})",
                 tuple(_json(v) if isinstance(v, (dict, list)) else v for v in record.values()),
             )
+            if record.get("status") in {"SUBMITTED", "OPEN", "PARTIALLY_FILLED"}:
+                connection.execute(
+                    """INSERT OR IGNORE INTO notifications
+                       (created_at,event_type,severity,title,reason_code,payload_json,dedupe_key)
+                       VALUES(?,'PAPER_TRADE_OPENED','INFO',?,'TRADE_OPENED',?,?)""",
+                    (
+                        _now(),
+                        f"Paper trade opened: {record['ticker']}",
+                        _json({"trade_id": record["trade_id"], "ticker": record["ticker"]}),
+                        f"trade-open:{record['trade_id']}",
+                    ),
+                )
 
     def add_trade_with_thesis(self, values: dict[str, Any], thesis: TradeThesis) -> None:
         """Atomically persist the mutable journal row and immutable original thesis."""
@@ -979,6 +1400,11 @@ class SwingDatabase:
         if str(values["ticker"]).upper() != thesis.ticker or str(values["setup_type"]) != thesis.setup.value:
             raise ValueError("Trade row and immutable thesis identity do not match")
         record = dict(values)
+        record.setdefault("initial_target", record.get("target"))
+        record.setdefault("initial_risk_dollars", record.get("planned_dollar_risk"))
+        record.setdefault("risk_rejection_history_json", "[]")
+        record.setdefault("feature_values_json", "{}")
+        record.setdefault("risk_settings_snapshot_json", "{}")
         record.setdefault("created_at", _now())
         record.setdefault("updated_at", record["created_at"])
         columns = list(record)
@@ -992,6 +1418,18 @@ class SwingDatabase:
                 "INSERT INTO trade_theses(trade_id,thesis_json,thesis_sha256,created_at) VALUES(?,?,?,?)",
                 (record["trade_id"], thesis_json, sha256(thesis_json.encode("utf-8")).hexdigest(), _now()),
             )
+            if record.get("status") in {"SUBMITTED", "OPEN", "PARTIALLY_FILLED"}:
+                connection.execute(
+                    """INSERT OR IGNORE INTO notifications
+                       (created_at,event_type,severity,title,reason_code,payload_json,dedupe_key)
+                       VALUES(?,'PAPER_TRADE_OPENED','INFO',?,'TRADE_OPENED',?,?)""",
+                    (
+                        _now(),
+                        f"Paper trade opened: {record['ticker']}",
+                        _json({"trade_id": record["trade_id"], "ticker": record["ticker"]}),
+                        f"trade-open:{record['trade_id']}",
+                    ),
+                )
 
     def get_trade_thesis(self, trade_id: str) -> TradeThesis | None:
         with self.connect() as connection:
@@ -1019,6 +1457,8 @@ class SwingDatabase:
             "strategy_version",
             "initial_stop",
             "target",
+            "initial_target",
+            "initial_risk_dollars",
             "planned_dollar_risk",
             "planned_account_risk_pct",
             "planned_rr",
@@ -1028,6 +1468,19 @@ class SwingDatabase:
             "bear_thesis",
             "pm_reasoning",
             "reason_entry",
+            "config_version",
+            "scanner_version",
+            "model_name",
+            "prompt_version",
+            "market_data_timestamp",
+            "feature_values_json",
+            "risk_settings_snapshot_json",
+            "risk_cluster",
+            "volatility_bucket",
+            "earnings_distance_at_entry",
+            "technical_invalidation_reason",
+            "llm_verdict",
+            "risk_rejection_history_json",
         }
         attempted = sorted(immutable.intersection(values))
         if attempted:
@@ -1107,7 +1560,13 @@ class SwingDatabase:
             )
             connection.execute(
                 "INSERT INTO operational_alerts(created_at,severity,code,message,payload_json) VALUES(?,'CRITICAL','RECONCILIATION_MISMATCH',?,?)",
-                (now, "; ".join(discrepancies), _json({"discrepancies": discrepancies})),
+                (now, _safe("; ".join(discrepancies)), _json({"discrepancies": discrepancies})),
+            )
+            connection.execute(
+                """INSERT INTO notifications
+                   (created_at,event_type,severity,title,reason_code,payload_json,dedupe_key)
+                   VALUES(?,'BROKER_DATABASE_MISMATCH','CRITICAL','Broker/database mismatch','RECONCILIATION_MISMATCH',?,?)""",
+                (now, _json({"discrepancies": discrepancies}), f"reconciliation:{now}"),
             )
 
     def acknowledge_reconciliation_halt(self, *, acknowledged_by: str, reason: str) -> None:
@@ -1171,19 +1630,43 @@ class SwingDatabase:
         unrealized_pnl: float | None = None,
         mfe: float | None = None,
         mae: float | None = None,
+        high: float | None = None,
+        low: float | None = None,
+        unrealized_r: float | None = None,
+        mfe_r: float | None = None,
+        mae_r: float | None = None,
         payload: dict[str, Any] | None = None,
     ) -> None:
         with self.connect() as connection:
             connection.execute(
                 """INSERT INTO trade_snapshots
-                   (trade_id,observed_at,price,stop,unrealized_pnl,mfe,mae,source,payload_json)
-                   VALUES(?,?,?,?,?,?,?,?,?)""",
-                (trade_id, _now(), price, stop, unrealized_pnl, mfe, mae, source, _json(payload or {})),
+                   (trade_id,observed_at,price,stop,unrealized_pnl,mfe,mae,source,payload_json,
+                    high,low,unrealized_r,mfe_r,mae_r)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    trade_id,
+                    _now(),
+                    price,
+                    stop,
+                    unrealized_pnl,
+                    mfe,
+                    mae,
+                    source,
+                    _json(payload or {}),
+                    high,
+                    low,
+                    unrealized_r,
+                    mfe_r,
+                    mae_r,
+                ),
             )
 
     def trade_price_extremes(self, trade_id: str, fallback: float) -> tuple[float, float]:
         with self.connect() as connection:
-            row = connection.execute("SELECT MAX(price) AS high, MIN(price) AS low FROM trade_snapshots WHERE trade_id=?", (trade_id,)).fetchone()
+            row = connection.execute(
+                "SELECT MAX(COALESCE(high,price)) AS high, MIN(COALESCE(low,price)) AS low FROM trade_snapshots WHERE trade_id=?",
+                (trade_id,),
+            ).fetchone()
         return (
             float(row["high"]) if row and row["high"] is not None else fallback,
             float(row["low"]) if row and row["low"] is not None else fallback,
@@ -1262,8 +1745,9 @@ class SwingDatabase:
         with self.connect() as connection:
             connection.execute(
                 """INSERT INTO postmortems
-                   (postmortem_id,trade_id,classification,followed_strategy,answers_json,evidence_json,model_name,created_at)
-                   VALUES(?,?,?,?,?,?,?,?)""",
+                   (postmortem_id,trade_id,classification,followed_strategy,answers_json,evidence_json,model_name,created_at,
+                    process_quality_score,outcome,mechanical_answers_json,narrative)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     postmortem_id,
                     record.trade_id,
@@ -1273,11 +1757,89 @@ class SwingDatabase:
                     _json(record.evidence),
                     model_name,
                     _now(),
+                    record.process_quality_score,
+                    record.outcome,
+                    _json(record.mechanical_answers),
+                    _safe(record.narrative) if record.narrative else None,
                 ),
             )
             connection.execute(
-                "UPDATE trades SET postmortem_classification=?, mistake_type=?, updated_at=? WHERE trade_id=?",
-                (record.classification.value, record.mistake_type, _now(), record.trade_id),
+                """UPDATE trades SET postmortem_classification=?, mistake_type=?, process_quality_score=?,
+                   outcome=?, updated_at=? WHERE trade_id=?""",
+                (
+                    record.classification.value,
+                    record.mistake_type,
+                    record.process_quality_score,
+                    record.outcome,
+                    _now(),
+                    record.trade_id,
+                ),
+            )
+
+    def record_notification(
+        self,
+        *,
+        event_type: str,
+        severity: str,
+        title: str,
+        reason_code: str,
+        payload: dict[str, Any],
+        dedupe_key: str | None = None,
+    ) -> bool:
+        try:
+            with self.connect() as connection:
+                connection.execute(
+                    """INSERT INTO notifications
+                       (created_at,event_type,severity,title,reason_code,payload_json,dedupe_key)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (
+                        _now(),
+                        event_type,
+                        severity,
+                        _safe(title),
+                        reason_code,
+                        _json(payload),
+                        dedupe_key,
+                    ),
+                )
+            return True
+        except self.integrity_errors:
+            return False
+
+    def record_log(
+        self,
+        *,
+        level: str,
+        event: str,
+        reason_code: str,
+        context: dict[str, Any],
+        ticker: str | None = None,
+        decision_id: str | None = None,
+        trade_id: str | None = None,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO structured_logs
+                   (occurred_at,level,event,reason_code,ticker,decision_id,trade_id,context_json)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    _now(),
+                    level,
+                    event,
+                    reason_code,
+                    ticker,
+                    decision_id,
+                    trade_id,
+                    _json(context),
+                ),
+            )
+
+    def persist_report(self, report_type: str, generated_at: str, strategy_version: str, payload: dict[str, Any]) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO persisted_reports
+                   (report_type,generated_at,strategy_version,payload_json) VALUES(?,?,?,?)""",
+                (report_type, generated_at, strategy_version, _json(payload)),
             )
 
     def record_model_cost(
@@ -1506,6 +2068,11 @@ class SwingDatabase:
             "risk_snapshots",
             "risk_rejections",
             "halt_events",
+            "decision_records",
+            "llm_cycles",
+            "notifications",
+            "structured_logs",
+            "persisted_reports",
         ]
         with self.connect() as connection:
             return {table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]) for table in tables}

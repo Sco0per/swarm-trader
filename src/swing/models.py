@@ -379,3 +379,17 @@ class PostmortemRecord(BaseModel):
     mistake_type: str | None = None
     lessons: list[str] = Field(default_factory=list)
     evidence: dict[str, Any] = Field(default_factory=dict)
+    original_setup_valid: bool | None = None
+    scanner_correct: bool | None = None
+    entry_timing_good: bool | None = None
+    sizing_correct: bool | None = None
+    stop_placement_correct: bool | None = None
+    execution_correct: bool | None = None
+    thesis_valid: bool | None = None
+    exit_good: bool | None = None
+    result_driver: Literal["PROCESS", "LUCK", "MIXED", "UNKNOWN"] = "UNKNOWN"
+    would_take_again: bool | None = None
+    process_quality_score: float | None = Field(default=None, ge=0, le=100)
+    outcome: Literal["WIN", "LOSS", "BREAKEVEN"] = "BREAKEVEN"
+    mechanical_answers: dict[str, bool | None] = Field(default_factory=dict)
+    narrative: str | None = None

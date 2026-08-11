@@ -60,6 +60,7 @@ class FunnelRejection:
     stage: str
     reason_code: str
     details: tuple[str, ...] = ()
+    feature_values: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -74,9 +75,16 @@ class ScanFunnelReport:
     rejections: list[FunnelRejection] = field(default_factory=list)
     result: str = "NO_TRADE"
 
-    def reject(self, symbol: str, stage: str, reason_code: str, details: tuple[str, ...] = ()) -> None:
+    def reject(
+        self,
+        symbol: str,
+        stage: str,
+        reason_code: str,
+        details: tuple[str, ...] = (),
+        feature_values: dict[str, object] | None = None,
+    ) -> None:
         self.rejection_counts[reason_code] += 1
-        self.rejections.append(FunnelRejection(symbol, stage, reason_code, details))
+        self.rejections.append(FunnelRejection(symbol, stage, reason_code, details, feature_values or {}))
 
     def as_dict(self) -> dict:
         return {
@@ -265,14 +273,14 @@ class DeterministicSwingScanner:
                 report.reject(symbol, "liquidity_history", "bar_timestamps_invalid")
                 continue
             if len(frame) < self.settings.minimum_history_sessions:
-                report.reject(symbol, "liquidity_history", "insufficient_history")
+                report.reject(symbol, "liquidity_history", "insufficient_history", feature_values={"sessions": len(frame), "minimum_sessions": self.settings.minimum_history_sessions})
                 continue
             market_timestamp = frame.index[-1].to_pydatetime()
             if market_timestamp.tzinfo is None:
                 market_timestamp = market_timestamp.replace(tzinfo=timezone.utc)
             age = retrieved_at.astimezone(timezone.utc) - market_timestamp.astimezone(timezone.utc)
             if age < -timedelta(days=1) or age > timedelta(days=self.settings.strategy.maximum_bar_age_calendar_days):
-                report.reject(symbol, "liquidity_history", "bar_data_stale")
+                report.reject(symbol, "liquidity_history", "bar_data_stale", feature_values={"bar_age_seconds": age.total_seconds(), "maximum_age_days": self.settings.strategy.maximum_bar_age_calendar_days})
                 continue
             close = frame["close"]
             price = float(close.iloc[-1])
@@ -280,13 +288,13 @@ class DeterministicSwingScanner:
             adv20 = float(frame["volume"].tail(liquidity_window).mean())
             average_dollar_volume = float((frame["close"] * frame["volume"]).tail(liquidity_window).mean())
             if price <= self.settings.minimum_price:
-                report.reject(symbol, "liquidity_history", "minimum_price")
+                report.reject(symbol, "liquidity_history", "minimum_price", feature_values={"price": price, "minimum_price": self.settings.minimum_price})
                 continue
             if adv20 <= self.settings.minimum_average_volume:
-                report.reject(symbol, "liquidity_history", "minimum_average_volume")
+                report.reject(symbol, "liquidity_history", "minimum_average_volume", feature_values={"average_volume": adv20, "minimum_average_volume": self.settings.minimum_average_volume})
                 continue
             if average_dollar_volume <= self.settings.minimum_average_dollar_volume:
-                report.reject(symbol, "liquidity_history", "minimum_average_dollar_volume")
+                report.reject(symbol, "liquidity_history", "minimum_average_dollar_volume", feature_values={"average_dollar_volume": average_dollar_volume, "minimum_average_dollar_volume": self.settings.minimum_average_dollar_volume})
                 continue
             if asset.bid is None or asset.ask is None or asset.bid <= 0 or asset.ask <= asset.bid:
                 report.reject(symbol, "liquidity_history", "spread_unavailable")
@@ -302,13 +310,14 @@ class DeterministicSwingScanner:
                     continue
             spread = (asset.ask - asset.bid) / ((asset.ask + asset.bid) / 2)
             if spread >= self.settings.maximum_spread_pct:
-                report.reject(symbol, "liquidity_history", "maximum_spread")
+                report.reject(symbol, "liquidity_history", "maximum_spread", feature_values={"spread_pct": spread, "maximum_spread_pct": self.settings.maximum_spread_pct})
                 continue
             report.passed_liquidity_history += 1
             medium = sma(close, self.settings.strategy.medium_ma_period)
             stock_rs = roc(close, self.settings.strategy.relative_strength_lookback) - roc(_frame(spy_bars)["close"], self.settings.strategy.relative_strength_lookback)
-            if medium is None or not (price > medium and (_slope(close, self.settings.strategy.medium_ma_period, self.settings.strategy.trend_slope_lookback) > self.settings.strategy.minimum_trend_slope or stock_rs >= self.settings.strategy.minimum_spy_relative_strength)):
-                report.reject(symbol, "trend_rs", "trend_rs_ineligible")
+            medium_slope = _slope(close, self.settings.strategy.medium_ma_period, self.settings.strategy.trend_slope_lookback)
+            if medium is None or not (price > medium and (medium_slope > self.settings.strategy.minimum_trend_slope or stock_rs >= self.settings.strategy.minimum_spy_relative_strength)):
+                report.reject(symbol, "trend_rs", "trend_rs_ineligible", feature_values={"price": price, "medium_ma": medium, "medium_slope": medium_slope, "stock_rs": stock_rs})
                 continue
             report.trend_rs_eligible += 1
             sector_etf = SECTOR_ETFS.get(asset.sector)
@@ -340,6 +349,7 @@ class DeterministicSwingScanner:
                     "setup",
                     "setup_no_match",
                     tuple(f"{item.setup_type.value}:{item.primary_reason}" for item in validations),
+                    {item.setup_type.value: dict(item.features) for item in validations},
                 )
                 continue
             report.setup_matches += 1

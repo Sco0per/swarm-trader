@@ -150,6 +150,8 @@ class SwingSettings:
     trading_enabled: bool = False
     live_acknowledgement: str = ""
     strategy_version: str = "SWING_V1.0"
+    config_version: str = "SWING_CONFIG_V1"
+    scanner_version: str = "deterministic-swing-scanner-v2"
     database_path: Path = ROOT / "data" / "adaptive_swing.db"
     do_not_trade_path: Path = ROOT / "config" / "do_not_trade.yaml"
     universe_path: Path = ROOT / "config" / "universe" / "us_liquid_2026-08-11.csv"
@@ -211,6 +213,7 @@ class SwingSettings:
     trailing_eligible_setups: tuple[str, ...] = ("TREND_PULLBACK", "RELATIVE_STRENGTH_CONTINUATION")
     cooldown_trading_days: int = 10
     minimum_statistical_sample: int = 30
+    llm_material_score_change: float = 5.0
     maximum_scanner_candidates: int = 20
     maximum_pm_candidates: int = 5
     models: ModelSettings = field(default_factory=ModelSettings)
@@ -310,6 +313,8 @@ class SwingSettings:
             raise ValueError("Event and post-loss exclusions may not be weakened")
         if self.minimum_statistical_sample < 30:
             raise ValueError("MINIMUM_STATISTICAL_SAMPLE may not be below 30")
+        if not 1 <= self.llm_material_score_change <= 20:
+            raise ValueError("LLM_MATERIAL_SCORE_CHANGE must remain between 1 and 20 points")
         if not (1 <= self.maximum_scanner_candidates <= 20) or not (1 <= self.maximum_pm_candidates <= 5):
             raise ValueError("Candidate limits must be positive and may not exceed 20/5")
         additions = (self.neutral_score_threshold_addition, self.choppy_score_threshold_addition, self.hostile_score_threshold_addition)
@@ -330,6 +335,8 @@ def load_settings() -> SwingSettings:
         trading_enabled=_bool("TRADING_ENABLED", False),
         live_acknowledgement=os.getenv("LIVE_TRADING_ACK", ""),
         strategy_version=os.getenv("STRATEGY_VERSION", "SWING_V1.0"),
+        config_version=os.getenv("CONFIG_VERSION", "SWING_CONFIG_V1"),
+        scanner_version=os.getenv("SCANNER_VERSION", "deterministic-swing-scanner-v2"),
         database_path=Path(os.getenv("SWING_DATABASE_PATH", str(ROOT / "data" / "adaptive_swing.db"))),
         do_not_trade_path=Path(os.getenv("DO_NOT_TRADE_PATH", str(ROOT / "config" / "do_not_trade.yaml"))),
         universe_path=Path(os.getenv("SWING_UNIVERSE_PATH", str(ROOT / "config" / "universe" / "us_liquid_2026-08-11.csv"))),
@@ -388,6 +395,7 @@ def load_settings() -> SwingSettings:
         trailing_eligible_setups=tuple(value.strip().upper() for value in os.getenv("TRAILING_ELIGIBLE_SETUPS", "TREND_PULLBACK,RELATIVE_STRENGTH_CONTINUATION").split(",") if value.strip()),
         cooldown_trading_days=_int("COOLDOWN_TRADING_DAYS", 10),
         minimum_statistical_sample=_int("MINIMUM_STATISTICAL_SAMPLE", 30),
+        llm_material_score_change=_float("LLM_MATERIAL_SCORE_CHANGE", 5.0),
         maximum_scanner_candidates=_int("MAXIMUM_SCANNER_CANDIDATES", 20),
         maximum_pm_candidates=_int("MAXIMUM_PM_CANDIDATES", 5),
         strategy=StrategySettings(

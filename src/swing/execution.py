@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from .brokers.base import BrokerProvider
 from .config import SwingSettings
 from .database import SwingDatabase
+from .decision_versioning import PROMPT_VERSIONS, risk_settings_snapshot
 from .lifecycle import PositionLifecycleService
 from .models import (
     BrokerOrder,
@@ -516,6 +517,9 @@ class SwingExecutionService:
     ) -> dict:
         if risk.authoritative_stop is None:
             raise ValueError("Cannot persist a trade without an authoritative stop")
+        actual_initial_risk = shares * (entry_price - risk.authoritative_stop)
+        volatility_pct = candidate.atr / entry_price
+        volatility_bucket = "LOW" if volatility_pct < 0.02 else "MEDIUM" if volatility_pct < 0.04 else "HIGH"
         return {
             "trade_id": trade_id,
             "decision_id": proposal.decision_id,
@@ -530,9 +534,11 @@ class SwingExecutionService:
             "initial_stop": risk.authoritative_stop,
             "final_stop": risk.authoritative_stop,
             "target": candidate.resistance,
+            "initial_target": candidate.resistance,
             "shares": shares,
             "position_value": shares * entry_price,
             "planned_dollar_risk": risk.planned_dollar_risk,
+            "initial_risk_dollars": actual_initial_risk if actual_initial_risk > 0 else risk.planned_dollar_risk,
             "planned_account_risk_pct": risk.planned_account_risk_pct,
             "planned_rr": risk.planned_rr,
             "market_regime": proposal.market_regime.value,
@@ -559,6 +565,20 @@ class SwingExecutionService:
             "broker_provider": self.broker.name,
             "broker_order_id": broker_order_id,
             "order_type": intent.entry_type,
+            "entry_slippage": entry_price - candidate.price,
+            "earnings_distance_at_entry": candidate.earnings_trading_days,
+            "technical_invalidation_reason": proposal.invalidation,
+            "llm_verdict": "APPROVE",
+            "risk_rejection_history_json": self.database.risk_rejection_history_for(proposal.ticker),
+            "config_version": self.settings.config_version,
+            "scanner_version": self.settings.scanner_version,
+            "model_name": self.settings.models.portfolio_manager_model or self.settings.models.fallback_model,
+            "prompt_version": PROMPT_VERSIONS["portfolio_manager"],
+            "market_data_timestamp": candidate.data.market_timestamp.isoformat() if candidate.data.market_timestamp else None,
+            "feature_values_json": {**candidate.validator_features, "score_components": candidate.score_components},
+            "risk_settings_snapshot_json": risk_settings_snapshot(self.settings),
+            "risk_cluster": candidate.validator_features.get("risk_cluster"),
+            "volatility_bucket": volatility_bucket,
             "risk_validation_result": risk.model_dump_json(),
         }
 
