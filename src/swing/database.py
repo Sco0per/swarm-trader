@@ -1,0 +1,871 @@
+"""Versioned SQLite system of record for adaptive swing trading."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterator
+
+from .models import PostmortemRecord, SwingCandidate
+
+
+SCHEMA_VERSION = 2
+
+
+DDL = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS strategy_versions (
+    strategy_version TEXT PRIMARY KEY,
+    status TEXT NOT NULL CHECK(status IN ('PRODUCTION','CANDIDATE','REJECTED','RETIRED')),
+    introduced_at TEXT NOT NULL,
+    changes_json TEXT NOT NULL DEFAULT '{}',
+    supporting_evidence_json TEXT NOT NULL DEFAULT '{}',
+    backtest_id TEXT,
+    out_of_sample_results_json TEXT,
+    paper_results_json TEXT,
+    approved_by TEXT,
+    approved_at TEXT
+);
+CREATE TABLE IF NOT EXISTS market_regimes (
+    regime_id TEXT PRIMARY KEY,
+    observed_at TEXT NOT NULL,
+    regime TEXT NOT NULL,
+    spy_trend TEXT,
+    qqq_trend TEXT,
+    volatility REAL,
+    breadth REAL,
+    inputs_json TEXT NOT NULL,
+    source TEXT NOT NULL,
+    retrieved_at TEXT NOT NULL,
+    market_timestamp TEXT
+);
+CREATE TABLE IF NOT EXISTS candidate_scores (
+    candidate_id TEXT PRIMARY KEY,
+    evaluated_at TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    setup_type TEXT NOT NULL,
+    score REAL NOT NULL,
+    score_components_json TEXT NOT NULL,
+    disposition TEXT NOT NULL DEFAULT 'EVALUATED',
+    rejection_reason TEXT,
+    market_regime TEXT NOT NULL,
+    sector TEXT,
+    sector_etf TEXT,
+    context_json TEXT NOT NULL,
+    data_source TEXT NOT NULL,
+    retrieved_at TEXT NOT NULL,
+    market_timestamp TEXT
+);
+CREATE TABLE IF NOT EXISTS trades (
+    trade_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL UNIQUE,
+    intent_id TEXT UNIQUE,
+    candidate_id TEXT REFERENCES candidate_scores(candidate_id),
+    ticker TEXT NOT NULL,
+    setup_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    strategy_version TEXT NOT NULL REFERENCES strategy_versions(strategy_version),
+    entry_datetime TEXT,
+    exit_datetime TEXT,
+    entry_price REAL,
+    exit_price REAL,
+    initial_stop REAL NOT NULL,
+    final_stop REAL NOT NULL,
+    target REAL NOT NULL,
+    shares REAL NOT NULL,
+    position_value REAL,
+    planned_dollar_risk REAL NOT NULL,
+    planned_account_risk_pct REAL NOT NULL,
+    planned_rr REAL NOT NULL,
+    realized_pnl REAL,
+    realized_r REAL,
+    mfe REAL,
+    mae REAL,
+    mfe_r REAL,
+    mae_r REAL,
+    holding_period_days REAL,
+    market_regime TEXT NOT NULL,
+    spy_trend TEXT,
+    qqq_trend TEXT,
+    sector TEXT,
+    sector_trend TEXT,
+    sector_relative_strength REAL,
+    stock_relative_strength REAL,
+    stock_relative_strength_sector REAL,
+    rsi REAL,
+    macd REAL,
+    atr REAL,
+    adx REAL,
+    ma20 REAL,
+    ma50 REAL,
+    ma200 REAL,
+    volume_ratio REAL,
+    support REAL,
+    resistance REAL,
+    candidate_score REAL NOT NULL,
+    bull_thesis TEXT,
+    bear_thesis TEXT,
+    pm_reasoning TEXT,
+    reason_entry TEXT,
+    reason_exit TEXT,
+    broker_provider TEXT,
+    broker_order_id TEXT,
+    order_type TEXT,
+    slippage REAL,
+    risk_validation_result TEXT NOT NULL,
+    rule_violation_status TEXT NOT NULL DEFAULT 'NONE',
+    postmortem_classification TEXT,
+    mistake_type TEXT,
+    hypothesis_ids_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS trade_snapshots (
+    snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id TEXT NOT NULL REFERENCES trades(trade_id),
+    observed_at TEXT NOT NULL,
+    price REAL NOT NULL,
+    stop REAL NOT NULL,
+    unrealized_pnl REAL,
+    mfe REAL,
+    mae REAL,
+    source TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS agent_decisions (
+    agent_decision_id TEXT PRIMARY KEY,
+    candidate_id TEXT REFERENCES candidate_scores(candidate_id),
+    trade_id TEXT REFERENCES trades(trade_id),
+    role TEXT NOT NULL,
+    model_name TEXT,
+    schema_version TEXT NOT NULL,
+    decision TEXT,
+    payload_json TEXT NOT NULL,
+    validation_status TEXT NOT NULL,
+    validation_error TEXT,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    estimated_cost REAL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS postmortems (
+    postmortem_id TEXT PRIMARY KEY,
+    trade_id TEXT NOT NULL UNIQUE REFERENCES trades(trade_id),
+    classification TEXT NOT NULL,
+    followed_strategy INTEGER NOT NULL,
+    answers_json TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    model_name TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lessons (
+    lesson_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    description TEXT NOT NULL,
+    supporting_trades_json TEXT NOT NULL,
+    sample_size INTEGER NOT NULL,
+    confidence REAL NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('OBSERVATION','PROVISIONAL','VALIDATED','REJECTED','RETIRED')),
+    applicable_setup TEXT,
+    applicable_regime TEXT,
+    evidence_json TEXT NOT NULL,
+    strategy_version TEXT NOT NULL,
+    approved_by TEXT,
+    approved_at TEXT
+);
+CREATE TABLE IF NOT EXISTS hypotheses (
+    hypothesis_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    observation TEXT NOT NULL,
+    proposed_rule TEXT NOT NULL,
+    setup_type TEXT,
+    market_regime TEXT,
+    supporting_lesson_ids_json TEXT NOT NULL,
+    supporting_sample_size INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('PROPOSED','VALIDATING','VALIDATED','REJECTED','APPROVED')),
+    validation_plan_json TEXT NOT NULL,
+    validation_results_json TEXT,
+    candidate_strategy_version TEXT,
+    human_approved INTEGER NOT NULL DEFAULT 0,
+    approved_by TEXT,
+    approved_at TEXT
+);
+CREATE TABLE IF NOT EXISTS backtests (
+    backtest_id TEXT PRIMARY KEY,
+    hypothesis_id TEXT REFERENCES hypotheses(hypothesis_id),
+    strategy_version TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    data_hash TEXT NOT NULL,
+    config_hash TEXT NOT NULL,
+    train_period TEXT NOT NULL,
+    validation_period TEXT NOT NULL,
+    out_of_sample_period TEXT NOT NULL,
+    metrics_json TEXT NOT NULL,
+    benchmark_json TEXT NOT NULL,
+    regime_results_json TEXT NOT NULL,
+    walk_forward_json TEXT,
+    artifact_path TEXT,
+    accepted INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS experiments (
+    experiment_id TEXT PRIMARY KEY,
+    hypothesis_id TEXT REFERENCES hypotheses(hypothesis_id),
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    status TEXT NOT NULL,
+    baseline_backtest_id TEXT REFERENCES backtests(backtest_id),
+    candidate_backtest_id TEXT REFERENCES backtests(backtest_id),
+    fitness REAL,
+    fitness_components_json TEXT,
+    notes TEXT
+);
+CREATE TABLE IF NOT EXISTS rule_violations (
+    violation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at TEXT NOT NULL,
+    trade_id TEXT REFERENCES trades(trade_id),
+    decision_id TEXT,
+    intent_id TEXT,
+    ticker TEXT,
+    rule TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    blocked INTEGER NOT NULL,
+    details TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS execution_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at TEXT NOT NULL,
+    intent_id TEXT NOT NULL,
+    decision_id TEXT,
+    trade_id TEXT REFERENCES trades(trade_id),
+    broker_order_id TEXT,
+    ticker TEXT NOT NULL,
+    side TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    event_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS entry_admissions (
+    intent_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL UNIQUE,
+    ticker TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('PENDING','SUBMITTED','UNKNOWN','RECONCILED','CANCELED','REJECTED')),
+    planned_dollar_risk REAL NOT NULL,
+    account_equity REAL NOT NULL,
+    trade_id TEXT REFERENCES trades(trade_id),
+    broker_order_id TEXT,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS equity_snapshots (
+    snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    observed_at TEXT NOT NULL,
+    equity REAL NOT NULL,
+    cash REAL NOT NULL,
+    buying_power REAL NOT NULL,
+    realized_pnl REAL,
+    unrealized_pnl REAL,
+    drawdown_pct REAL NOT NULL,
+    execution_mode TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS benchmark_snapshots (
+    snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    observed_at TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    price REAL NOT NULL,
+    source TEXT NOT NULL,
+    UNIQUE(observed_at, symbol)
+);
+CREATE TABLE IF NOT EXISTS model_costs (
+    cost_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at TEXT NOT NULL,
+    role TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    cost REAL NOT NULL,
+    candidate_id TEXT,
+    trade_id TEXT
+);
+CREATE TABLE IF NOT EXISTS system_state (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_submitted_intent
+    ON execution_events(intent_id) WHERE event_type = 'ORDER_SUBMITTED';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_reserved_intent
+    ON execution_events(intent_id) WHERE event_type = 'ORDER_RESERVED';
+CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
+CREATE INDEX IF NOT EXISTS idx_trades_entry ON trades(entry_datetime);
+CREATE INDEX IF NOT EXISTS idx_trades_context ON trades(setup_type, market_regime, sector);
+CREATE INDEX IF NOT EXISTS idx_candidates_ticker_time ON candidate_scores(ticker, evaluated_at);
+CREATE INDEX IF NOT EXISTS idx_events_intent ON execution_events(intent_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_admissions_status ON entry_admissions(status, created_at);
+"""
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, default=str, sort_keys=True)
+
+
+class SwingDatabase:
+    """Small explicit repository layer; callers never depend on ORM state."""
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.path)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA busy_timeout = 5000")
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def initialize(self, strategy_version: str = "SWING_V1.0") -> None:
+        with self.connect() as connection:
+            connection.executescript(DDL)
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
+                (SCHEMA_VERSION, _now()),
+            )
+            connection.execute(
+                """INSERT OR IGNORE INTO strategy_versions
+                   (strategy_version, status, introduced_at, changes_json, supporting_evidence_json)
+                   VALUES(?, 'PRODUCTION', ?, ?, ?)""",
+                (strategy_version, _now(), _json({"baseline": "conservative swing-only rules"}), _json({"status": "paper validation required"})),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO system_state(key, value_json, updated_at, updated_by) VALUES('kill_switch', 'false', ?, 'system')",
+                (_now(),),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO system_state(key, value_json, updated_at, updated_by) VALUES('drawdown_halt', 'false', ?, 'system')",
+                (_now(),),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO system_state(key, value_json, updated_at, updated_by) VALUES('loss_streak_halt', 'false', ?, 'system')",
+                (_now(),),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO system_state(key, value_json, updated_at, updated_by) VALUES('reconciliation_halt', 'false', ?, 'system')",
+                (_now(),),
+            )
+
+    def set_state(self, key: str, value: Any, updated_by: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO system_state(key, value_json, updated_at, updated_by) VALUES(?, ?, ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,
+                   updated_at=excluded.updated_at, updated_by=excluded.updated_by""",
+                (key, _json(value), _now(), updated_by),
+            )
+
+    def get_state(self, key: str, default: Any = None) -> Any:
+        with self.connect() as connection:
+            row = connection.execute("SELECT value_json FROM system_state WHERE key=?", (key,)).fetchone()
+        return json.loads(row["value_json"]) if row else default
+
+    def record_candidate(self, candidate: SwingCandidate, disposition: str = "EVALUATED", rejection_reason: str | None = None) -> None:
+        payload = candidate.model_dump(mode="json")
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO candidate_scores
+                   (candidate_id,evaluated_at,ticker,setup_type,score,score_components_json,disposition,
+                    rejection_reason,market_regime,sector,sector_etf,context_json,data_source,retrieved_at,market_timestamp)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(candidate_id) DO UPDATE SET
+                     evaluated_at=excluded.evaluated_at, score=excluded.score,
+                     score_components_json=excluded.score_components_json, disposition=excluded.disposition,
+                     rejection_reason=excluded.rejection_reason, context_json=excluded.context_json,
+                     data_source=excluded.data_source, retrieved_at=excluded.retrieved_at,
+                     market_timestamp=excluded.market_timestamp""",
+                (
+                    candidate.candidate_id, _now(), candidate.ticker, candidate.setup_type.value, candidate.score,
+                    _json(candidate.score_components), disposition, rejection_reason, candidate.market_regime.value,
+                    candidate.sector, candidate.sector_etf, _json(payload), candidate.data.source,
+                    candidate.data.retrieved_at.isoformat(),
+                    candidate.data.market_timestamp.isoformat() if candidate.data.market_timestamp else None,
+                ),
+            )
+
+    def record_agent_decision(
+        self, agent_decision_id: str, role: str, schema_version: str, payload: dict[str, Any],
+        validation_status: str, *, candidate_id: str | None = None, trade_id: str | None = None,
+        model_name: str | None = None, decision: str | None = None, validation_error: str | None = None,
+        prompt_tokens: int | None = None, completion_tokens: int | None = None, estimated_cost: float | None = None,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO agent_decisions
+                   (agent_decision_id,candidate_id,trade_id,role,model_name,schema_version,decision,payload_json,
+                    validation_status,validation_error,prompt_tokens,completion_tokens,estimated_cost,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    agent_decision_id, candidate_id, trade_id, role, model_name, schema_version, decision,
+                    _json(payload), validation_status, validation_error, prompt_tokens, completion_tokens,
+                    estimated_cost, _now(),
+                ),
+            )
+
+    def record_violation(
+        self, rule: str, details: str, *, ticker: str | None = None, decision_id: str | None = None,
+        intent_id: str | None = None, trade_id: str | None = None, severity: str = "MAJOR", blocked: bool = True,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO rule_violations
+                   (occurred_at,trade_id,decision_id,intent_id,ticker,rule,severity,blocked,details)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (_now(), trade_id, decision_id, intent_id, ticker, rule, severity, int(blocked), details),
+            )
+
+    def record_execution_event(
+        self, *, intent_id: str, decision_id: str | None, trade_id: str | None, broker_order_id: str | None,
+        ticker: str, side: str, quantity: float, event_type: str, status: str, payload: dict[str, Any],
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO execution_events
+                   (occurred_at,intent_id,decision_id,trade_id,broker_order_id,ticker,side,quantity,event_type,status,payload_json)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (_now(), intent_id, decision_id, trade_id, broker_order_id, ticker, side, quantity, event_type, status, _json(payload)),
+            )
+
+    def intent_was_submitted(self, intent_id: str) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM execution_events WHERE intent_id=? AND event_type IN ('ORDER_RESERVED','ORDER_SUBMITTED') LIMIT 1", (intent_id,)
+            ).fetchone()
+        return row is not None
+
+    def reserve_intent(
+        self, *, intent_id: str, decision_id: str, ticker: str, side: str, quantity: float, payload: dict[str, Any],
+    ) -> bool:
+        """Atomically reserve an intent before the network call; retries fail closed."""
+        try:
+            self.record_execution_event(
+                intent_id=intent_id, decision_id=decision_id, trade_id=None, broker_order_id=None,
+                ticker=ticker, side=side, quantity=quantity, event_type="ORDER_RESERVED", status="PENDING", payload=payload,
+            )
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def reserve_entry_admission(
+        self,
+        *,
+        intent_id: str,
+        decision_id: str,
+        ticker: str,
+        planned_dollar_risk: float,
+        account_equity: float,
+        payload: dict[str, Any],
+        day_start_iso: str,
+        week_start_iso: str,
+        broker_position_symbols: set[str],
+        max_positions: int,
+        max_day: int,
+        max_week: int,
+        max_open_risk_pct: float,
+    ) -> tuple[bool, str | None, str]:
+        """Serialize final admission under a SQLite write lock.
+
+        Active unlinked reservations count toward activity, position, and open-risk
+        limits so concurrent decisions cannot each pass on the same stale state.
+        """
+        now = _now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM entry_admissions WHERE intent_id=?", (intent_id,)).fetchone():
+                return False, "duplicate_intent", "Intent already has an admission record"
+            active = connection.execute(
+                """SELECT ticker, planned_dollar_risk, created_at FROM entry_admissions
+                   WHERE trade_id IS NULL AND status IN ('PENDING','UNKNOWN')"""
+            ).fetchall()
+            today_trades = int(connection.execute(
+                "SELECT COUNT(*) FROM trades WHERE entry_datetime >= ? AND status NOT IN ('REJECTED','CANCELED')",
+                (day_start_iso,),
+            ).fetchone()[0])
+            week_trades = int(connection.execute(
+                "SELECT COUNT(*) FROM trades WHERE entry_datetime >= ? AND status NOT IN ('REJECTED','CANCELED')",
+                (week_start_iso,),
+            ).fetchone()[0])
+            pending_today = sum(1 for row in active if row["created_at"] >= day_start_iso)
+            pending_week = sum(1 for row in active if row["created_at"] >= week_start_iso)
+            if today_trades + pending_today >= max_day:
+                return False, "daily_entry_limit", "Serialized daily entry limit reached"
+            if week_trades + pending_week >= max_week:
+                return False, "weekly_entry_limit", "Serialized weekly entry limit reached"
+            open_rows = connection.execute(
+                "SELECT ticker, planned_dollar_risk FROM trades WHERE status IN ('SUBMITTED','OPEN','PARTIALLY_FILLED')"
+            ).fetchall()
+            estimated_symbols = set(broker_position_symbols)
+            estimated_symbols.update(str(row["ticker"]).upper() for row in open_rows)
+            estimated_symbols.update(str(row["ticker"]).upper() for row in active)
+            if ticker.upper() not in estimated_symbols and len(estimated_symbols) >= max_positions:
+                return False, "max_positions", "Serialized maximum-position limit reached"
+            existing_open_risk = sum(float(row["planned_dollar_risk"] or 0) for row in open_rows)
+            reserved_risk = sum(float(row["planned_dollar_risk"] or 0) for row in active)
+            if existing_open_risk + reserved_risk + planned_dollar_risk > account_equity * max_open_risk_pct + 1e-9:
+                return False, "max_combined_open_risk", "Serialized combined open-risk limit reached"
+            connection.execute(
+                """INSERT INTO entry_admissions
+                   (intent_id,decision_id,ticker,status,planned_dollar_risk,account_equity,payload_json,created_at,updated_at)
+                   VALUES(?,?,?,'PENDING',?,?,?,?,?)""",
+                (intent_id, decision_id, ticker.upper(), planned_dollar_risk, account_equity, _json(payload), now, now),
+            )
+            connection.execute(
+                """INSERT INTO execution_events
+                   (occurred_at,intent_id,decision_id,trade_id,broker_order_id,ticker,side,quantity,event_type,status,payload_json)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (now, intent_id, decision_id, None, None, ticker.upper(), "buy", payload.get("intent", {}).get("quantity", 0),
+                 "ORDER_RESERVED", "PENDING", _json(payload)),
+            )
+        return True, None, "Entry admission reserved"
+
+    def update_admission(
+        self, intent_id: str, status: str, *, trade_id: str | None = None, broker_order_id: str | None = None,
+    ) -> None:
+        if status not in {"PENDING", "SUBMITTED", "UNKNOWN", "RECONCILED", "CANCELED", "REJECTED"}:
+            raise ValueError("Invalid admission status")
+        with self.connect() as connection:
+            connection.execute(
+                """UPDATE entry_admissions SET status=?, trade_id=COALESCE(?,trade_id),
+                   broker_order_id=COALESCE(?,broker_order_id), updated_at=? WHERE intent_id=?""",
+                (status, trade_id, broker_order_id, _now(), intent_id),
+            )
+
+    def active_admissions(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM entry_admissions WHERE status IN ('PENDING','SUBMITTED','UNKNOWN') ORDER BY created_at"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_trade(self, values: dict[str, Any]) -> None:
+        required = {
+            "trade_id", "decision_id", "ticker", "setup_type", "status", "strategy_version", "initial_stop",
+            "final_stop", "target", "shares", "planned_dollar_risk", "planned_account_risk_pct", "planned_rr",
+            "market_regime", "candidate_score", "risk_validation_result",
+        }
+        missing = sorted(required - values.keys())
+        if missing:
+            raise ValueError(f"Missing trade fields: {', '.join(missing)}")
+        record = dict(values)
+        record.setdefault("created_at", _now())
+        record.setdefault("updated_at", record["created_at"])
+        columns = list(record)
+        placeholders = ",".join("?" for _ in columns)
+        with self.connect() as connection:
+            connection.execute(
+                f"INSERT INTO trades ({','.join(columns)}) VALUES ({placeholders})",
+                tuple(_json(v) if isinstance(v, (dict, list)) else v for v in record.values()),
+            )
+
+    def update_trade(self, trade_id: str, **values: Any) -> None:
+        if not values:
+            return
+        values["updated_at"] = _now()
+        assignments = ",".join(f"{key}=?" for key in values)
+        params = [(_json(value) if isinstance(value, (dict, list)) else value) for value in values.values()]
+        with self.connect() as connection:
+            connection.execute(f"UPDATE trades SET {assignments} WHERE trade_id=?", (*params, trade_id))
+
+    def record_trade_snapshot(
+        self, trade_id: str, *, price: float, stop: float, source: str, unrealized_pnl: float | None = None,
+        mfe: float | None = None, mae: float | None = None, payload: dict[str, Any] | None = None,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO trade_snapshots
+                   (trade_id,observed_at,price,stop,unrealized_pnl,mfe,mae,source,payload_json)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (trade_id, _now(), price, stop, unrealized_pnl, mfe, mae, source, _json(payload or {})),
+            )
+
+    def trade_price_extremes(self, trade_id: str, fallback: float) -> tuple[float, float]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT MAX(price) AS high, MIN(price) AS low FROM trade_snapshots WHERE trade_id=?", (trade_id,)
+            ).fetchone()
+        return (
+            float(row["high"]) if row and row["high"] is not None else fallback,
+            float(row["low"]) if row and row["low"] is not None else fallback,
+        )
+
+    def get_trade(self, trade_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM trades WHERE trade_id=?", (trade_id,)).fetchone()
+        return dict(row) if row else None
+
+    def open_trades(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute("SELECT * FROM trades WHERE status IN ('SUBMITTED','OPEN','PARTIALLY_FILLED')").fetchall()
+        return [dict(row) for row in rows]
+
+    def closed_trades(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute("SELECT * FROM trades WHERE status='CLOSED' ORDER BY exit_datetime").fetchall()
+        return [dict(row) for row in rows]
+
+    def new_position_count(self, start_iso: str) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS n FROM trades WHERE entry_datetime >= ? AND status NOT IN ('REJECTED','CANCELED')", (start_iso,)
+            ).fetchone()
+        return int(row["n"])
+
+    def consecutive_losses(self) -> int:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT realized_pnl FROM trades WHERE status='CLOSED' AND realized_pnl IS NOT NULL ORDER BY exit_datetime DESC LIMIT 100"
+            ).fetchall()
+        count = 0
+        for row in rows:
+            if float(row["realized_pnl"]) < 0:
+                count += 1
+            else:
+                break
+        return count
+
+    def last_losing_trade(self, ticker: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM trades WHERE ticker=? AND status='CLOSED' AND realized_pnl < 0
+                   ORDER BY exit_datetime DESC LIMIT 1""",
+                (ticker.upper(),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def record_equity_snapshot(self, **values: Any) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO equity_snapshots
+                   (observed_at,equity,cash,buying_power,realized_pnl,unrealized_pnl,drawdown_pct,execution_mode)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    values.get("observed_at", _now()), values["equity"], values["cash"], values["buying_power"],
+                    values.get("realized_pnl"), values.get("unrealized_pnl"), values.get("drawdown_pct", 0),
+                    values.get("execution_mode", "paper"),
+                ),
+            )
+
+    def equity_high(self, fallback: float) -> float:
+        with self.connect() as connection:
+            row = connection.execute("SELECT MAX(equity) AS high FROM equity_snapshots").fetchone()
+        return float(row["high"]) if row and row["high"] is not None else fallback
+
+    def record_postmortem(self, postmortem_id: str, record: PostmortemRecord, model_name: str | None = None) -> None:
+        answers = record.model_dump(mode="json", exclude={"evidence"})
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO postmortems
+                   (postmortem_id,trade_id,classification,followed_strategy,answers_json,evidence_json,model_name,created_at)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    postmortem_id, record.trade_id, record.classification.value, int(record.followed_strategy),
+                    _json(answers), _json(record.evidence), model_name, _now(),
+                ),
+            )
+            connection.execute(
+                "UPDATE trades SET postmortem_classification=?, mistake_type=?, updated_at=? WHERE trade_id=?",
+                (record.classification.value, record.mistake_type, _now(), record.trade_id),
+            )
+
+    def record_model_cost(
+        self, *, role: str, model_name: str, prompt_tokens: int | None, completion_tokens: int | None,
+        cost: float, candidate_id: str | None = None, trade_id: str | None = None,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO model_costs
+                   (occurred_at,role,model_name,prompt_tokens,completion_tokens,cost,candidate_id,trade_id)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (_now(), role, model_name, prompt_tokens, completion_tokens, cost, candidate_id, trade_id),
+            )
+
+    def validated_lessons_for(self, setup_type: str | None, market_regime: str | None) -> list[dict[str, Any]]:
+        """Read-only lookup of VALIDATED lessons applicable to a setup/regime.
+
+        A lesson with no ``applicable_setup``/``applicable_regime`` filter is
+        treated as applying broadly. Only VALIDATED lessons are ever returned;
+        OBSERVATION/PROVISIONAL rows must never influence production decisions.
+        """
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM lessons WHERE status='VALIDATED'
+                   AND (applicable_setup IS NULL OR applicable_setup=?)
+                   AND (applicable_regime IS NULL OR applicable_regime=?)
+                   ORDER BY created_at DESC""",
+                (setup_type, market_regime),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_observation(
+        self, lesson_id: str, description: str, trade_id: str, confidence: float, strategy_version: str,
+        applicable_setup: str | None, applicable_regime: str | None, evidence: dict[str, Any],
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO lessons
+                   (lesson_id,created_at,description,supporting_trades_json,sample_size,confidence,status,
+                    applicable_setup,applicable_regime,evidence_json,strategy_version)
+                   VALUES(?,?,?,?,1,?,'OBSERVATION',?,?,?,?)""",
+                (
+                    lesson_id, _now(), description, _json([trade_id]), confidence, applicable_setup,
+                    applicable_regime, _json(evidence), strategy_version,
+                ),
+            )
+
+    def transition_lesson(self, lesson_id: str, new_status: str, *, approved_by: str | None = None) -> None:
+        allowed = {
+            "OBSERVATION": {"PROVISIONAL", "REJECTED", "RETIRED"},
+            "PROVISIONAL": {"VALIDATED", "REJECTED", "RETIRED"},
+            "VALIDATED": {"RETIRED"},
+            "REJECTED": set(),
+            "RETIRED": set(),
+        }
+        with self.connect() as connection:
+            row = connection.execute("SELECT status,sample_size FROM lessons WHERE lesson_id=?", (lesson_id,)).fetchone()
+            if not row:
+                raise KeyError(lesson_id)
+            if new_status not in allowed[row["status"]]:
+                raise ValueError(f"Invalid lesson transition {row['status']} -> {new_status}")
+            if new_status == "VALIDATED" and (not approved_by or int(row["sample_size"]) < 2):
+                raise ValueError("Validation requires multi-trade evidence and explicit human approval")
+            connection.execute(
+                "UPDATE lessons SET status=?, approved_by=?, approved_at=? WHERE lesson_id=?",
+                (new_status, approved_by, _now() if approved_by else None, lesson_id),
+            )
+
+    def add_hypothesis(self, values: dict[str, Any]) -> None:
+        required = {
+            "hypothesis_id", "observation", "proposed_rule", "supporting_lesson_ids",
+            "supporting_sample_size", "validation_plan",
+        }
+        missing = required - values.keys()
+        if missing:
+            raise ValueError(f"Missing hypothesis fields: {sorted(missing)}")
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO hypotheses
+                   (hypothesis_id,created_at,observation,proposed_rule,setup_type,market_regime,
+                    supporting_lesson_ids_json,supporting_sample_size,status,validation_plan_json,
+                    validation_results_json,candidate_strategy_version,human_approved,approved_by,approved_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    values["hypothesis_id"], _now(), values["observation"], values["proposed_rule"],
+                    values.get("setup_type"), values.get("market_regime"), _json(values["supporting_lesson_ids"]),
+                    values["supporting_sample_size"], values.get("status", "PROPOSED"), _json(values["validation_plan"]),
+                    _json(values["validation_results"]) if values.get("validation_results") is not None else None,
+                    values.get("candidate_strategy_version"), int(values.get("human_approved", False)),
+                    values.get("approved_by"), values.get("approved_at"),
+                ),
+            )
+
+    def get_hypothesis(self, hypothesis_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM hypotheses WHERE hypothesis_id=?", (hypothesis_id,)).fetchone()
+        return dict(row) if row else None
+
+    def update_hypothesis_validation(self, hypothesis_id: str, *, status: str, results: dict[str, Any]) -> None:
+        if status not in {"VALIDATING", "VALIDATED", "REJECTED"}:
+            raise ValueError("Invalid validation status")
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE hypotheses SET status=?, validation_results_json=? WHERE hypothesis_id=?",
+                (status, _json(results), hypothesis_id),
+            )
+
+    def add_backtest(self, values: dict[str, Any]) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO backtests
+                   (backtest_id,hypothesis_id,strategy_version,created_at,data_hash,config_hash,train_period,
+                    validation_period,out_of_sample_period,metrics_json,benchmark_json,regime_results_json,
+                    walk_forward_json,artifact_path,accepted)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    values["backtest_id"], values.get("hypothesis_id"), values["strategy_version"], _now(),
+                    values["data_hash"], values["config_hash"], values["train_period"], values["validation_period"],
+                    values["out_of_sample_period"], _json(values["metrics"]), _json(values["benchmark"]),
+                    _json(values["regime_results"]), _json(values.get("walk_forward")) if values.get("walk_forward") else None,
+                    values.get("artifact_path"), int(values.get("accepted", False)),
+                ),
+            )
+
+    def approve_candidate_strategy(self, hypothesis_id: str, approved_by: str) -> str:
+        """Human-only promotion; requires an accepted OOS backtest and adequate sample."""
+        if not approved_by.strip():
+            raise ValueError("approved_by is required")
+        with self.connect() as connection:
+            hypothesis = connection.execute("SELECT * FROM hypotheses WHERE hypothesis_id=?", (hypothesis_id,)).fetchone()
+            if not hypothesis:
+                raise KeyError(hypothesis_id)
+            if int(hypothesis["supporting_sample_size"]) < 30:
+                raise ValueError("At least 30 supporting observations are required for production approval")
+            backtest = connection.execute(
+                "SELECT * FROM backtests WHERE hypothesis_id=? AND accepted=1 ORDER BY created_at DESC LIMIT 1", (hypothesis_id,)
+            ).fetchone()
+            if not backtest:
+                raise ValueError("No accepted out-of-sample backtest supports this hypothesis")
+            version = hypothesis["candidate_strategy_version"]
+            if not version:
+                raise ValueError("Hypothesis has no candidate strategy version")
+            connection.execute(
+                """INSERT OR IGNORE INTO strategy_versions
+                   (strategy_version,status,introduced_at,changes_json,supporting_evidence_json,backtest_id,approved_by,approved_at)
+                   VALUES(?, 'CANDIDATE', ?, ?, ?, ?, ?, ?)""",
+                (version, _now(), _json({"hypothesis_id": hypothesis_id}), _json({"backtest_id": backtest["backtest_id"]}),
+                 backtest["backtest_id"], approved_by, _now()),
+            )
+            connection.execute("UPDATE strategy_versions SET status='RETIRED' WHERE status='PRODUCTION'")
+            connection.execute(
+                "UPDATE strategy_versions SET status='PRODUCTION', approved_by=?, approved_at=? WHERE strategy_version=?",
+                (approved_by, _now(), version),
+            )
+            connection.execute(
+                "UPDATE hypotheses SET status='APPROVED', human_approved=1, approved_by=?, approved_at=? WHERE hypothesis_id=?",
+                (approved_by, _now(), hypothesis_id),
+            )
+        return str(version)
+
+    def rows(self, query: str, params: tuple = ()) -> list[dict[str, Any]]:
+        """Read-only helper used by reporting modules with fixed internal SQL."""
+        if not query.lstrip().upper().startswith("SELECT"):
+            raise ValueError("rows() accepts SELECT statements only")
+        with self.connect() as connection:
+            result = connection.execute(query, params).fetchall()
+        return [dict(row) for row in result]
+
+    def table_counts(self) -> dict[str, int]:
+        tables = [
+            "trades", "trade_snapshots", "market_regimes", "candidate_scores", "agent_decisions", "postmortems",
+            "lessons", "hypotheses", "strategy_versions", "backtests", "experiments", "rule_violations", "execution_events",
+            "entry_admissions",
+        ]
+        with self.connect() as connection:
+            return {table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]) for table in tables}
