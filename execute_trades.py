@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
 """
-Trade Executor — Takes Agent's JSON decisions and executes via Alpaca.
+LEGACY Trade Executor — superseded by ``src.swing.execution.SwingExecutionService``.
+
+This script is NOT part of the supported swing production path and does not
+consult ``src/swing/risk.py``. New entries (``buy``/``short``) are refused by
+``main()``; the only paths that still reach a broker are ``--flatten`` without
+``--dry-run`` (emergency risk reduction) and explicit ``sell``/``cover`` exit
+orders. See docs/refactor/01_AUDIT_REPORT.md — this remains a known bypass path
+pending removal in a later prompt. Never invoke it for entries.
 
 Input: JSON on stdin or --file with format:
 {
   "trades": [
-    {"ticker": "NVDA", "action": "buy", "qty": 50, "reasoning": "..."},
-    {"ticker": "NVDA", "action": "buy", "qty": 20, "order_type": "bracket", "stop_price": 900, "take_profit": 1050, "reasoning": "..."},
-    {"ticker": "NVDA", "action": "buy", "qty": 10, "order_type": "limit", "limit_price": 920, "reasoning": "..."},
     {"ticker": "NVDA", "action": "sell", "qty": 10, "order_type": "stop", "stop_price": 880, "reasoning": "stop-loss on existing"},
     {"ticker": "NVDA", "action": "sell", "qty": 10, "order_type": "oco", "stop_price": 880, "take_profit": 1050, "reasoning": "exit bracket on existing"},
-    {"ticker": "NVDA", "action": "sell", "qty": 10, "order_type": "trailing_stop", "trail_percent": 2.0, "reasoning": "lock in gains"},
-    {"ticker": "NVDA", "action": "short", "qty": 10, "stop_price": 920, "take_profit": 850, "reasoning": "breakdown below VWAP"}
+    {"ticker": "NVDA", "action": "sell", "qty": 10, "order_type": "trailing_stop", "trail_percent": 2.0, "reasoning": "lock in gains"}
   ]
 }
 
 Order types: market (default), limit, bracket, stop, oco, trailing_stop
-Actions: buy, sell, hold, short, cover
+Actions: sell, cover, hold. Entry actions (buy/short) are permanently blocked here.
 
 Usage:
-  echo '{"trades":[...]}' | poetry run python execute_trades.py
-  poetry run python execute_trades.py --file decisions.json
   poetry run python execute_trades.py --file decisions.json --dry-run
-  poetry run python execute_trades.py --flatten               # Sell all positions at market
   poetry run python execute_trades.py --flatten --dry-run     # Preview flatten
-  poetry run python execute_trades.py --mode day --file decisions.json
+  poetry run python execute_trades.py --flatten               # Emergency: sell all at market
 """
 
 import argparse

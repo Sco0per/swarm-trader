@@ -5,7 +5,6 @@ Fast Alpaca Portfolio Check — No LLM, just data.
 Usage:
   poetry run python check_portfolio.py                    # Summary
   poetry run python check_portfolio.py --mode swing       # Swing mode categories
-  poetry run python check_portfolio.py --mode day         # Day mode categories
   poetry run python check_portfolio.py --telegram         # Telegram-formatted
   poetry run python check_portfolio.py --json             # JSON output
 """
@@ -38,8 +37,8 @@ def api(endpoint):
 
 def main():
     parser = argparse.ArgumentParser(description="Fast Alpaca portfolio check")
-    parser.add_argument("--mode", choices=["swing", "day"], default=None,
-                        help="Trading mode (default: resolved from trading_mode.json / env)")
+    parser.add_argument("--mode", choices=["swing"], default=None,
+                        help="Trading mode; only 'swing' is supported")
     parser.add_argument("--telegram", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()

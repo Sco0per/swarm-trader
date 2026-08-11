@@ -208,7 +208,7 @@ def main():
     parser.add_argument("--type", default="daily-brief",
                        choices=["daily-brief", "anomaly", "sector-signal", "evening-debrief"],
                        help="Intel packet type")
-    parser.add_argument("--mode", choices=["swing", "day"],
+    parser.add_argument("--mode", choices=["swing"],
                        help="Trading mode for context (default: auto-resolve)")
     parser.add_argument("--target", default="peer",
                        help="Target agent name (label only, used in output)")

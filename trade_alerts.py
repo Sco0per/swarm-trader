@@ -6,7 +6,6 @@ All thresholds pulled from active mode config — no hardcoded values.
 
 Usage:
   poetry run python trade_alerts.py --check              # Check all alerts
-  poetry run python trade_alerts.py --check --mode day   # Day mode thresholds
   poetry run python trade_alerts.py --check --telegram   # Output for Telegram
   poetry run python trade_alerts.py --audit decisions.json  # Audit before execution
 
@@ -249,8 +248,8 @@ def main():
     parser.add_argument("--check", action="store_true", help="Run all alert checks")
     parser.add_argument("--audit", type=str, help="Audit trade decisions before execution")
     parser.add_argument("--telegram", action="store_true", help="Telegram format")
-    parser.add_argument("--mode", choices=["swing", "day"], default=None,
-                        help="Trading mode (default: resolved from trading_mode.json / env)")
+    parser.add_argument("--mode", choices=["swing"], default=None,
+                        help="Trading mode; only 'swing' is supported")
     args = parser.parse_args()
 
     mode = resolve_mode(cli_mode=args.mode)

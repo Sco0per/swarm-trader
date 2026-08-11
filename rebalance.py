@@ -8,7 +8,6 @@ at market. Defaults to dry-run so you can preview before executing.
 Usage:
   poetry run python rebalance.py                        # Dry run, uses resolved mode
   poetry run python rebalance.py --mode swing           # Dry run, swing mode
-  poetry run python rebalance.py --mode day --execute   # Execute day mode rebalance
   poetry run python rebalance.py --mode swing --execute # Execute swing mode rebalance
 """
 
@@ -62,9 +61,9 @@ def main():
     parser = argparse.ArgumentParser(description="Rebalance portfolio to active mode universe")
     parser.add_argument(
         "--mode",
-        choices=["swing", "day"],
+        choices=["swing"],
         default=None,
-        help="Trading mode (default: resolved from trading_mode.json / env)",
+        help="Trading mode; only 'swing' is supported",
     )
     parser.add_argument(
         "--execute",

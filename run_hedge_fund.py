@@ -9,7 +9,6 @@ Usage:
   poetry run python run_hedge_fund.py                          # Dry run, all holdings
   poetry run python run_hedge_fund.py --execute                # Actually trade
   poetry run python run_hedge_fund.py --mode swing             # Swing mode (default)
-  poetry run python run_hedge_fund.py --mode day               # Day trading mode
   poetry run python run_hedge_fund.py --tickers NVDA,AVGO      # Specific tickers
   poetry run python run_hedge_fund.py --telegram               # Telegram-friendly output
   poetry run python run_hedge_fund.py --model qwen3.5:cloud    # Use different model
@@ -120,7 +119,6 @@ def main():
 Examples:
   python run_hedge_fund.py                             # Dry run all holdings (swing)
   python run_hedge_fund.py --execute                   # Execute trades
-  python run_hedge_fund.py --mode day --execute        # Day trading mode, execute
   python run_hedge_fund.py --tickers NVDA,AVGO         # Analyze specific tickers
   python run_hedge_fund.py --telegram                  # Telegram-friendly format
   python run_hedge_fund.py --model qwen3.5:cloud       # Use different model
@@ -130,7 +128,7 @@ Examples:
     parser.add_argument("--execute", action="store_true",
                         help="Actually execute trades (default: dry run)")
     parser.add_argument("--mode", choices=["swing"], default=None,
-                        help="Trading mode (default: resolved from trading_mode.json / env)")
+                        help="Trading mode; only 'swing' is supported")
     parser.add_argument("--tickers", type=str,
                         help="Comma-separated list of specific tickers to analyze")
     parser.add_argument("--telegram", action="store_true",

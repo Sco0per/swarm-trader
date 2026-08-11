@@ -19,7 +19,7 @@ Usage:
 
 Pipeline:
   TICKERS=$(poetry run python scan_market.py)
-  poetry run python gather_data.py --mode day --tickers $TICKERS --output /tmp/data.json
+  poetry run python gather_data.py --tickers $TICKERS --output /tmp/data.json
 """
 
 import argparse
@@ -265,7 +265,7 @@ Examples:
   
 Pipeline:
   TICKERS=$(poetry run python scan_market.py)
-  poetry run python gather_data.py --mode day --tickers $TICKERS --output /tmp/data.json
+  poetry run python gather_data.py --tickers $TICKERS --output /tmp/data.json
         """,
     )
     parser.add_argument("--json", action="store_true", help="Output full JSON with metadata")

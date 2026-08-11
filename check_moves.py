@@ -8,7 +8,6 @@ Used for quick pulse checks during the trading day.
 Usage:
   poetry run python check_moves.py                # Use resolved mode
   poetry run python check_moves.py --mode swing   # Force swing mode
-  poetry run python check_moves.py --mode day     # Force day mode
 """
 
 import argparse
@@ -32,7 +31,7 @@ if not API_KEY or not API_SECRET:
 
 def main():
     parser = argparse.ArgumentParser(description="Check market moves for universe stocks")
-    parser.add_argument("--mode", choices=["swing", "day"], help="Trading mode (default: auto-resolve)")
+    parser.add_argument("--mode", choices=["swing"], help="Trading mode (default: auto-resolve)")
     args = parser.parse_args()
 
     # Resolve mode

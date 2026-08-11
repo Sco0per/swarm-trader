@@ -7,7 +7,6 @@ Rules are non-negotiable and code-enforced; no LLM can override them.
 
 Usage (standalone check):
   poetry run python risk_manager.py --status
-  poetry run python risk_manager.py --status --mode day
 
 Importable:
   from risk_manager import validate_trade, get_portfolio_state
@@ -465,7 +464,7 @@ if __name__ == "__main__":
     parser.add_argument("--status", action="store_true", help="Show current risk status")
     parser.add_argument(
         "--mode",
-        choices=["swing", "day"],
+        choices=["swing"],
         default=None,
         help="Trading mode (overrides TRADING_MODE env, default: swing)",
     )

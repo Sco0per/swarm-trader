@@ -7,11 +7,9 @@ news, and insider activity for all tickers. Cassius (Opus 4.6) does the thinking
 
 Modes:
   --mode swing (default) — fundamentals + news + insider trades (existing behavior)
-  --mode day             — intraday technicals: VWAP, RSI, 5-min bars, volume ratio
 
 Usage:
   poetry run python gather_data.py                        # All holdings, swing mode
-  poetry run python gather_data.py --mode day             # Day trading intraday data
   poetry run python gather_data.py --tickers NVDA,AVGO    # Specific tickers
   poetry run python gather_data.py --include-universe     # Holdings + full universe
   poetry run python gather_data.py --top 8               # Top 8 by value
@@ -384,7 +382,7 @@ def main():
         "--mode",
         type=str,
         default="swing",
-        choices=["swing", "day"],
+        choices=["swing"],
         help="Data mode: 'swing' (fundamentals+news, default) or 'day' (intraday technicals)",
     )
     args = parser.parse_args()

@@ -1,16 +1,19 @@
-"""Alpaca paper trading integration for the AI hedge fund.
+"""LEGACY Alpaca integration for the imported multi-agent hedge-fund research app.
 
-Fetches positions, converts to portfolio format, and executes trades.
-Trade validation is delegated to risk_manager.py (V2 hard rules) — no
-parallel safety rail logic lives here.
+NOT part of the supported swing production path. The swing system's only broker
+boundary is ``src/swing/brokers/`` behind ``src/swing/risk.py`` and
+``src/swing/execution.py``. Nothing in ``src/swing`` imports this module.
 
-Helper functions (get_account, get_positions, etc.) are always safe to call.
-execute_decisions() routes buy/short orders through risk_manager.validate_trade()
-before placing.
+``execute_decisions()`` raises on ``dry_run=False`` and refuses ``buy``/``short``
+entries outright. However the module-level order helpers
+(``_place_alpaca_order``, ``_place_bracket_order``, ``_place_limit_order``,
+``_place_stop_order``, ``_place_trailing_stop``, ``_place_oco_order``,
+``flatten_positions``, ``cancel_order``, ``cancel_all_orders``) are still
+unguarded and will reach Alpaca if called directly. See
+docs/refactor/01_AUDIT_REPORT.md — this is a known bypass path pending removal.
 
-Multi-account support: all functions accept an optional `mode` parameter.
-When provided, credentials are routed to the correct account (day vs swing).
-When omitted, the current trading mode (from trading_mode.json) is used.
+Read helpers (get_alpaca_account, get_alpaca_positions, ...) are safe to call.
+The optional `mode` parameter is legacy and must be "swing" or None.
 """
 
 import os
