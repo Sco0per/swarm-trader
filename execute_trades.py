@@ -33,6 +33,7 @@ import logging
 import os
 import sys
 from datetime import datetime
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -59,11 +60,14 @@ def _headers() -> dict:
     """Get API headers for the currently active trading mode."""
     return get_account_for_mode(_active_mode).headers
 
-from src.config import get_mode_config, DEFAULT_TARGET_MULTIPLIER
+
+from src.config import DEFAULT_TARGET_MULTIPLIER, get_mode_config
 
 # V2 risk manager — validates every BUY before execution
 try:
-    from risk_manager import validate_trade as rm_validate_trade, get_portfolio_state as rm_get_portfolio_state
+    from risk_manager import get_portfolio_state as rm_get_portfolio_state
+    from risk_manager import validate_trade as rm_validate_trade
+
     RISK_MANAGER_AVAILABLE = True
     log.info("V2 risk manager loaded")
 except ImportError:
@@ -94,6 +98,7 @@ def get_daily_pnl(account: dict) -> float:
 
 def flatten_all(dry_run: bool = False) -> dict:
     """Market-sell every open position. Used for end-of-day flatten."""
+    raise RuntimeError("Legacy broker mutation is permanently disabled; use the reconciled src.swing lifecycle")
     r = requests.get(f"{API_BASE}/positions", headers=_headers(), timeout=10)
     r.raise_for_status()
     positions = r.json()
@@ -124,15 +129,25 @@ def flatten_all(dry_run: bool = False) -> dict:
             resp = requests.post(f"{API_BASE}/orders", headers=_headers(), json=order, timeout=10)
             if resp.status_code in (200, 201):
                 data = resp.json()
-                results.append({
-                    "ticker": symbol, "side": side, "qty": abs_qty,
-                    "status": "flattened", "order_id": data.get("id"),
-                })
+                results.append(
+                    {
+                        "ticker": symbol,
+                        "side": side,
+                        "qty": abs_qty,
+                        "status": "flattened",
+                        "order_id": data.get("id"),
+                    }
+                )
             else:
-                results.append({
-                    "ticker": symbol, "side": side, "qty": abs_qty,
-                    "status": "failed", "error": f"HTTP {resp.status_code}: {resp.text[:200]}",
-                })
+                results.append(
+                    {
+                        "ticker": symbol,
+                        "side": side,
+                        "qty": abs_qty,
+                        "status": "failed",
+                        "error": f"HTTP {resp.status_code}: {resp.text[:200]}",
+                    }
+                )
 
     return {
         "timestamp": datetime.now().isoformat(),
@@ -143,11 +158,16 @@ def flatten_all(dry_run: bool = False) -> dict:
 
 
 def place_order(
-    ticker, action, qty,
+    ticker,
+    action,
+    qty,
     order_type="market",
-    stop_price=None, take_profit=None,
-    limit_price=None, trail_percent=None,
-    entry_price=None, stop_pct=None,
+    stop_price=None,
+    take_profit=None,
+    limit_price=None,
+    trail_percent=None,
+    entry_price=None,
+    stop_pct=None,
 ):
     """Place an order. Supports market, bracket, limit, stop, oco, trailing_stop.
 
@@ -162,6 +182,7 @@ def place_order(
         oco             — exit-only: stop + take-profit on existing position (requires stop_price + take_profit)
         trailing_stop   — trailing stop that rises with price (requires trail_percent)
     """
+    raise RuntimeError("Legacy broker mutation is permanently disabled; use SwingExecutionService")
     side = "buy" if action in ("buy", "cover") else "sell"
 
     # Auto-calculate bracket prices if stop_pct is provided and prices are missing
@@ -183,10 +204,7 @@ def place_order(
     if action == "short":
         side = "sell"
 
-    use_bracket = (
-        order_type == "bracket"
-        or (stop_price is not None and take_profit is not None and order_type not in ("oco",))
-    )
+    use_bracket = order_type == "bracket" or (stop_price is not None and take_profit is not None and order_type not in ("oco",))
 
     if use_bracket:
         order = {
@@ -278,19 +296,13 @@ def validate_trade_legacy(ticker, action, qty, positions, portfolio_value, daily
 
     daily_pnl_pct = 0.0  # circuit breaker is now handled by V2 risk manager
     if action in ("buy", "short") and daily_pnl_pct <= -daily_loss_limit:
-        return False, (
-            f"Circuit breaker: down {abs(daily_pnl_pct)*100:.1f}% today "
-            f"(limit {daily_loss_limit*100:.0f}%). No new entries until tomorrow."
-        )
+        return False, (f"Circuit breaker: down {abs(daily_pnl_pct)*100:.1f}% today " f"(limit {daily_loss_limit*100:.0f}%). No new entries until tomorrow.")
 
     if current_price > 0:
         trade_value = qty * current_price
         max_value = portfolio_value * max_trade_pct
         if trade_value > max_value:
-            return False, (
-                f"Trade value ${trade_value:,.0f} exceeds max ${max_value:,.0f} "
-                f"({max_trade_pct*100:.0f}% of portfolio)"
-            )
+            return False, (f"Trade value ${trade_value:,.0f} exceeds max ${max_value:,.0f} " f"({max_trade_pct*100:.0f}% of portfolio)")
 
     return True, ""
 
@@ -312,11 +324,8 @@ def main():
     )
     args = parser.parse_args()
 
-    if not args.dry_run and not args.flatten:
-        log.error(
-            "Legacy entry execution is disabled. Use src.swing.execution.SwingExecutionService; "
-            "this script remains available only for dry-run research and emergency flattening."
-        )
+    if not args.dry_run:
+        log.error("Legacy entry execution is disabled. Use src.swing.execution.SwingExecutionService; " "this script remains available only for dry-run research.")
         return 2
 
     # Resolve mode: CLI flag > env var > default
@@ -361,10 +370,7 @@ def main():
     stop_loss_pct = mode_risk["stop_loss_pct"]
 
     if daily_pnl_pct <= -daily_loss_limit:
-        log.warning(
-            f"Circuit breaker ACTIVE: down {abs(daily_pnl_pct)*100:.1f}% today "
-            f"(limit {daily_loss_limit*100:.0f}%). New buy/short entries blocked."
-        )
+        log.warning(f"Circuit breaker ACTIVE: down {abs(daily_pnl_pct)*100:.1f}% today " f"(limit {daily_loss_limit*100:.0f}%). New buy/short entries blocked.")
 
     # Pre-fetch V2 portfolio state once (shared across all trade validations)
     rm_portfolio_state = None
@@ -395,14 +401,16 @@ def main():
             continue
 
         if action in ("buy", "short"):
-            results.append({
-                "ticker": ticker,
-                "action": action,
-                "qty": qty,
-                "status": "blocked",
-                "reason": "Legacy entry path disabled; use src.swing.execution.SwingExecutionService",
-                "rule": "legacy_entry_disabled",
-            })
+            results.append(
+                {
+                    "ticker": ticker,
+                    "action": action,
+                    "qty": qty,
+                    "status": "blocked",
+                    "reason": "Legacy entry path disabled; use src.swing.execution.SwingExecutionService",
+                    "rule": "legacy_entry_disabled",
+                }
+            )
             continue
 
         # ── V2 Risk Manager validation (buy/short entries only) ──────────────
@@ -419,12 +427,16 @@ def main():
             )
             if not rm_result.approved:
                 log.warning(f"V2 risk manager BLOCKED {action} {ticker}: {rm_result.reason}")
-                results.append({
-                    "ticker": ticker, "action": action, "qty": qty,
-                    "status": "blocked",
-                    "reason": rm_result.reason,
-                    "rule": rm_result.rule,
-                })
+                results.append(
+                    {
+                        "ticker": ticker,
+                        "action": action,
+                        "qty": qty,
+                        "status": "blocked",
+                        "reason": rm_result.reason,
+                        "rule": rm_result.rule,
+                    }
+                )
                 continue
             log.info(f"V2 risk manager approved {action} {ticker}")
 
@@ -448,14 +460,15 @@ def main():
                         take_profit = round(ref - stop_dist * DEFAULT_TARGET_MULTIPLIER, 2)
 
             if action == "buy" and stop_price is not None:
-                log.info(
-                    f"BUY {ticker}: bracket order with stop=${stop_price:.2f} "
-                    f"(-{stop_loss_pct*100:.1f}%), target=${take_profit:.2f}"
-                )
+                log.info(f"BUY {ticker}: bracket order with stop=${stop_price:.2f} " f"(-{stop_loss_pct*100:.1f}%), target=${take_profit:.2f}")
 
         # Legacy validate_trade (sell/cover position checks)
         valid, reason = validate_trade_legacy(
-            ticker, action, qty, positions, portfolio_value,
+            ticker,
+            action,
+            qty,
+            positions,
+            portfolio_value,
             daily_loss_limit=daily_loss_limit,
             max_trade_pct=max_trade_pct,
         )
@@ -466,8 +479,11 @@ def main():
 
         if args.dry_run:
             dry_entry = {
-                "ticker": ticker, "action": action, "qty": qty,
-                "status": "would_execute", "reasoning": reasoning,
+                "ticker": ticker,
+                "action": action,
+                "qty": qty,
+                "status": "would_execute",
+                "reasoning": reasoning,
                 "order_type": order_type,
             }
             if stop_price is not None:
@@ -483,19 +499,28 @@ def main():
         else:
             # Pass stop_pct only in swing mode so place_order() can auto-calc if needed
             result = place_order(
-                ticker, action, qty,
+                ticker,
+                action,
+                qty,
                 order_type=order_type,
-                stop_price=stop_price, take_profit=take_profit,
-                limit_price=limit_price, trail_percent=trail_percent,
+                stop_price=stop_price,
+                take_profit=take_profit,
+                limit_price=limit_price,
+                trail_percent=trail_percent,
                 entry_price=entry_price,
                 stop_pct=stop_loss_pct if mode == "swing" else None,
             )
             status = "executed" if result["success"] else "failed"
-            results.append({
-                "ticker": ticker, "action": action, "qty": qty,
-                "status": status, "reasoning": reasoning,
-                **result,
-            })
+            results.append(
+                {
+                    "ticker": ticker,
+                    "action": action,
+                    "qty": qty,
+                    "status": status,
+                    "reasoning": reasoning,
+                    **result,
+                }
+            )
             if result["success"]:
                 executed += 1
 
@@ -517,6 +542,7 @@ def main():
     if not args.dry_run:
         try:
             from trade_journal import append_trades
+
             logged = append_trades(output)
             print(f"📓 Logged {logged} trades to journal", file=sys.stderr)
         except Exception as e:
@@ -525,6 +551,7 @@ def main():
     # Auto-snapshot performance
     try:
         from performance_tracker_v2 import take_snapshot
+
         take_snapshot()
     except Exception as e:
         print(f"⚠️ Performance snapshot failed: {e}", file=sys.stderr)

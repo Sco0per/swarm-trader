@@ -16,7 +16,6 @@ from .lifecycle import IllegalLifecycleTransition, PositionLifecycleService
 from .models import PositionLifecycleState, TradeThesis
 from .postmortem import PostmortemEngine
 
-
 ACTIVE_ORDER_STATUSES = {"accepted", "new", "pending_new", "partially_filled", "held", "open"}
 TERMINAL_EMPTY_STATUSES = {"canceled", "cancelled", "expired", "rejected", "stopped", "suspended"}
 
@@ -59,8 +58,12 @@ class BrokerReconciler:
     """Fail closed unless every active local/broker record has a known outcome."""
 
     def __init__(
-        self, settings: SwingSettings, database: SwingDatabase, broker: BrokerProvider,
-        *, postmortem_backend: StructuredModelBackend | None = None,
+        self,
+        settings: SwingSettings,
+        database: SwingDatabase,
+        broker: BrokerProvider,
+        *,
+        postmortem_backend: StructuredModelBackend | None = None,
     ):
         self.settings = settings
         self.database = database
@@ -86,11 +89,31 @@ class BrokerReconciler:
             if broker_order_id and parent and parent != str(broker_order_id):
                 continue
             linked.append(row)
-        active = [row for row in linked if str(_value(row, "status", default="unknown")).lower() in ACTIVE_ORDER_STATUSES | {"pending_replace", "replaced"}]
-        terminal = [row for row in linked if str(_value(row, "status", default="unknown")).lower() in TERMINAL_EMPTY_STATUSES]
+        active = [row for row in linked if str(_value(row, "status", default="unknown")).lower() in ACTIVE_ORDER_STATUSES | {"pending_replace"}]
+        terminal = [row for row in linked if str(_value(row, "status", default="unknown")).lower() in TERMINAL_EMPTY_STATUSES | {"replaced"}]
         stops = [row for row in active if _value(row, "stop_price") is not None or str(_value(row, "type", "order_type", default="")).lower() in {"stop", "stop_limit", "trailing_stop"}]
         targets = [row for row in active if _value(row, "limit_price") is not None and row not in stops]
         return stops, targets, terminal
+
+    @staticmethod
+    def _corporate_action_adjustment(
+        symbol: str,
+        old_quantity: float,
+        new_quantity: float,
+        history: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        for row in history:
+            event_type = str(_value(row, "event_type", "type", default="")).lower()
+            if event_type not in {"corporate_action", "split", "reverse_split"}:
+                continue
+            if str(_value(row, "symbol", default="")).upper() != symbol:
+                continue
+            declared_old = float(_value(row, "old_qty", "old_quantity", default=old_quantity) or old_quantity)
+            declared_new = float(_value(row, "new_qty", "new_quantity", default=new_quantity) or new_quantity)
+            ratio = float(_value(row, "ratio", default=(declared_new / declared_old if declared_old else 0)) or 0)
+            if abs(declared_old - old_quantity) <= 1e-9 and abs(declared_new - new_quantity) <= 1e-9 and ratio > 0:
+                return {**row, "ratio": ratio}
+        return None
 
     def _emergency_protection_remediation(self, trade: dict[str, Any], reason: str) -> None:
         self.database.activate_halt("reconciliation_halt", reason, "broker_reconciler")
@@ -140,11 +163,7 @@ class BrokerReconciler:
                 discrepancies.append(f"Unsupported broker position side: {position.symbol} {position.side}")
                 continue
             positions_by_symbol[position.symbol.upper()] = position
-        history_by_id = {
-            str(_value(row, "id", "broker_order_id")): row
-            for row in history
-            if _value(row, "id", "broker_order_id") is not None
-        }
+        history_by_id = {str(_value(row, "id", "broker_order_id")): row for row in history if _value(row, "id", "broker_order_id") is not None}
 
         for admission in self.database.active_admissions():
             if admission.get("trade_id"):
@@ -152,11 +171,7 @@ class BrokerReconciler:
             intent_id = str(admission["intent_id"])
             broker_order_id = admission.get("broker_order_id")
             match = next(
-                (
-                    row for row in history
-                    if str(_value(row, "client_order_id", "intent_id", default="")) in {intent_id, intent_id[:48]}
-                    or (broker_order_id and str(_value(row, "id", "broker_order_id", default="")) == str(broker_order_id))
-                ),
+                (row for row in history if str(_value(row, "client_order_id", "intent_id", default="")) in {intent_id, intent_id[:48]} or (broker_order_id and str(_value(row, "id", "broker_order_id", default="")) == str(broker_order_id))),
                 None,
             )
             if match is None:
@@ -186,9 +201,16 @@ class BrokerReconciler:
                 self.database.add_trade_with_thesis(trade, thesis)
                 self.database.update_admission(intent_id, "SUBMITTED", trade_id=trade["trade_id"], broker_order_id=order_id)
                 self.database.record_execution_event(
-                    intent_id=intent_id, decision_id=trade["decision_id"], trade_id=trade["trade_id"],
-                    broker_order_id=order_id, ticker=trade["ticker"], side="buy", quantity=float(trade["shares"]),
-                    event_type="ORDER_RECOVERED", status=status, payload=match,
+                    intent_id=intent_id,
+                    decision_id=trade["decision_id"],
+                    trade_id=trade["trade_id"],
+                    broker_order_id=order_id,
+                    ticker=trade["ticker"],
+                    side="buy",
+                    quantity=float(trade["shares"]),
+                    event_type="ORDER_RECOVERED",
+                    status=status,
+                    payload=match,
                 )
                 recovered += 1
             except Exception as exc:
@@ -206,23 +228,62 @@ class BrokerReconciler:
             root_filled = float(_value(root or {}, "filled_qty", "filled_quantity", default=0) or 0)
             root_fill_price = _value(root or {}, "filled_avg_price", "average_fill_price")
             if position is not None:
-                filled_shares = max(float(trade["shares"]), abs(position.quantity), root_filled)
+                expected_shares = max(float(trade["shares"]), root_filled)
+                position_shares = abs(position.quantity)
+                verified_exited = sum(float(_value(row, "filled_qty", "filled_quantity", default=0) or 0) for row in history if str(_value(row, "symbol", default="")).upper() == symbol and str(_value(row, "side", default="")).lower() == "sell" and str(_value(row, "parent_order_id", default="")) == str(trade.get("broker_order_id")) and float(_value(row, "filled_qty", "filled_quantity", default=0) or 0) > 0)
+                expected_position_shares = max(expected_shares - verified_exited, 0)
+                action = None
+                if expected_position_shares > 0 and abs(position_shares - expected_position_shares) > 1e-9:
+                    action = self._corporate_action_adjustment(symbol, expected_position_shares, position_shares, history)
+                    if action is None:
+                        discrepancies.append(f"Position quantity mismatch for {symbol}: expected remaining {expected_position_shares:g}, broker position {position_shares:g}")
+                        continue
+                filled_shares = position_shares if action is not None else expected_shares
+                updates = {
+                    "status": "OPEN",
+                    "shares": filled_shares,
+                    "entry_price": float(root_fill_price) if root_fill_price is not None else position.average_entry_price,
+                    "position_value": position_shares * position.current_price,
+                }
+                if action is not None:
+                    ratio = float(action["ratio"])
+                    updates["entry_price"] = float(trade["entry_price"]) / ratio
+                    if _value(action, "adjusted_stop") is not None:
+                        updates["final_stop"] = float(_value(action, "adjusted_stop"))
                 self.database.update_trade(
                     trade["trade_id"],
-                    status="OPEN",
-                    shares=filled_shares,
-                    entry_price=float(root_fill_price) if root_fill_price is not None else position.average_entry_price,
-                    position_value=abs(position.quantity) * position.current_price,
+                    **updates,
                 )
+                if action is not None:
+                    self.database.record_execution_event(
+                        intent_id=str(trade.get("intent_id") or f"corporate-action-{trade['trade_id']}"),
+                        decision_id=trade.get("decision_id"),
+                        trade_id=str(trade["trade_id"]),
+                        broker_order_id=trade.get("broker_order_id"),
+                        ticker=symbol,
+                        side="adjustment",
+                        quantity=filled_shares,
+                        event_type="CORPORATE_ACTION_RECONCILED",
+                        status="RECONCILED",
+                        payload=action,
+                    )
                 self.database.record_trade_snapshot(
-                    trade["trade_id"], price=position.current_price, stop=float(trade["final_stop"]),
+                    trade["trade_id"],
+                    price=position.current_price,
+                    stop=float(updates.get("final_stop", trade["final_stop"])),
                     unrealized_pnl=(position.current_price - position.average_entry_price) * abs(position.quantity),
                     source=self.broker.name,
                 )
                 lifecycle = self.database.get_position_lifecycle(str(trade["trade_id"]))
                 if lifecycle is None:
-                    self.lifecycle.create_open(str(trade["trade_id"]), current_stop=float(trade["final_stop"]), trigger="restart_recovery_fill")
+                    self.lifecycle.create_open(str(trade["trade_id"]), current_stop=float(updates.get("final_stop", trade["final_stop"])), trigger="restart_recovery_fill")
                     lifecycle = self.database.get_position_lifecycle(str(trade["trade_id"]))
+                elif action is not None:
+                    self.database.update_position_runtime(
+                        str(trade["trade_id"]),
+                        current_stop=float(updates.get("final_stop", trade["final_stop"])),
+                        context={"corporate_action": action},
+                    )
                 stops, targets, terminal_legs = self._protective_legs(symbol, trade.get("broker_order_id"), all_orders)
                 if not stops or not targets:
                     reason = f"Position {symbol} lacks active broker stop/target protection"
@@ -247,12 +308,7 @@ class BrokerReconciler:
                 self.database.update_trade(trade["trade_id"], **updates)
             sell_fills: list[dict[str, Any]] = []
             for row in history:
-                if (
-                    str(_value(row, "symbol", default="")).upper() != symbol
-                    or str(_value(row, "side", default="")).lower() != "sell"
-                    or float(_value(row, "filled_qty", "filled_quantity", default=0) or 0) <= 0
-                    or _value(row, "filled_avg_price", "average_fill_price") is None
-                ):
+                if str(_value(row, "symbol", default="")).upper() != symbol or str(_value(row, "side", default="")).lower() != "sell" or float(_value(row, "filled_qty", "filled_quantity", default=0) or 0) <= 0 or _value(row, "filled_avg_price", "average_fill_price") is None:
                     continue
                 filled_raw = _value(row, "filled_at", "updated_at", "submitted_at")
                 linked_to_entry = str(_value(row, "parent_order_id", default="")) == str(trade.get("broker_order_id"))
@@ -263,24 +319,12 @@ class BrokerReconciler:
                 elif not linked_to_entry:
                     continue
                 sell_fills.append(row)
-            exited_quantity = sum(
-                float(_value(row, "filled_qty", "filled_quantity", default=0) or 0) for row in sell_fills
-            )
+            exited_quantity = sum(float(_value(row, "filled_qty", "filled_quantity", default=0) or 0) for row in sell_fills)
             if sell_fills and expected_shares > 0 and exited_quantity + 1e-9 >= expected_shares:
-                exit_price = sum(
-                    float(_value(row, "filled_qty", "filled_quantity"))
-                    * float(_value(row, "filled_avg_price", "average_fill_price"))
-                    for row in sell_fills
-                ) / exited_quantity
-                dated_fills = [
-                    _value(row, "filled_at", "updated_at", "submitted_at") for row in sell_fills
-                    if _value(row, "filled_at", "updated_at", "submitted_at")
-                ]
+                exit_price = sum(float(_value(row, "filled_qty", "filled_quantity")) * float(_value(row, "filled_avg_price", "average_fill_price")) for row in sell_fills) / exited_quantity
+                dated_fills = [_value(row, "filled_at", "updated_at", "submitted_at") for row in sell_fills if _value(row, "filled_at", "updated_at", "submitted_at")]
                 exit_raw = max(dated_fills) if dated_fills else None
-                exit_time = (
-                    datetime.fromisoformat(str(exit_raw).replace("Z", "+00:00"))
-                    if exit_raw else datetime.now(timezone.utc)
-                )
+                exit_time = datetime.fromisoformat(str(exit_raw).replace("Z", "+00:00")) if exit_raw else datetime.now(timezone.utc)
                 high, low = self.database.trade_price_extremes(trade["trade_id"], float(trade["entry_price"]))
                 lifecycle = self.database.get_position_lifecycle(str(trade["trade_id"]))
                 if lifecycle is None:
@@ -288,11 +332,23 @@ class BrokerReconciler:
                     self.lifecycle.request_exit(str(trade["trade_id"]), trigger="broker_exit_fill", reason_code="EXIT_BROKER_PROTECTIVE_FILL")
                 elif lifecycle["state"] not in {PositionLifecycleState.EXIT_PENDING.value, PositionLifecycleState.CLOSED.value}:
                     self.lifecycle.request_exit(str(trade["trade_id"]), trigger="broker_exit_fill", reason_code="EXIT_BROKER_PROTECTIVE_FILL")
-                is_gap_through = exit_price < float(trade["final_stop"])
-                reason_exit = "protective stop gap-through fill" if is_gap_through else "broker reconciliation detected a filled exit"
+                is_stop_fill = any(_value(row, "stop_price") is not None or str(_value(row, "type", "order_type", default="")).lower() in {"stop", "stop_limit", "trailing_stop"} for row in sell_fills)
+                is_target_fill = any(_value(row, "limit_price") is not None and str(_value(row, "type", "order_type", default="")).lower() not in {"stop_limit"} for row in sell_fills)
+                is_gap_through = is_stop_fill and exit_price < float(trade["final_stop"])
+                if is_gap_through:
+                    reason_exit = "protective stop gap-through fill"
+                elif is_stop_fill:
+                    reason_exit = "broker structural stop fill"
+                elif is_target_fill:
+                    reason_exit = "broker initial target fill"
+                else:
+                    reason_exit = "broker reconciliation detected a filled exit"
                 self.postmortems.close_and_review(
-                    trade["trade_id"], exit_price=exit_price, exit_datetime=exit_time,
-                    high_during_trade=high, low_during_trade=low,
+                    trade["trade_id"],
+                    exit_price=exit_price,
+                    exit_datetime=exit_time,
+                    high_during_trade=high,
+                    low_during_trade=low,
                     reason_exit=reason_exit,
                     assessment={"evidence": {"broker_exit_fills": sell_fills}},
                     backend=self.postmortem_backend,
@@ -308,10 +364,7 @@ class BrokerReconciler:
                 closed += 1
                 continue
             if sell_fills:
-                discrepancies.append(
-                    f"Trade {trade['trade_id']} ({symbol}) has only {exited_quantity:g}/{float(trade['shares']):g} "
-                    "verified exit shares and no remaining broker position"
-                )
+                discrepancies.append(f"Trade {trade['trade_id']} ({symbol}) has only {exited_quantity:g}/{float(trade['shares']):g} " "verified exit shares and no remaining broker position")
                 continue
             root_status = str(_value(root or {}, "status", default="unknown")).lower()
             root_filled = float(_value(root or {}, "filled_qty", "filled_quantity", default=0) or 0)
@@ -337,13 +390,7 @@ class BrokerReconciler:
             client_id = str(_value(order, "client_order_id", "intent_id", default=""))
             side = str(_value(order, "side", default="")).lower()
             symbol = str(_value(order, "symbol", default="")).upper()
-            known = (
-                order_id in known_order_ids
-                or parent_id in known_order_ids
-                or client_id in known_intents
-                or client_id in {intent[:48] for intent in known_intents}
-                or (side == "sell" and symbol in known_symbols)
-            )
+            known = order_id in known_order_ids or parent_id in known_order_ids or client_id in known_intents or client_id in {intent[:48] for intent in known_intents} or (side == "sell" and symbol in known_symbols)
             if not known:
                 discrepancies.append(f"Untracked open broker order: {order_id or client_id or symbol}")
 
@@ -357,7 +404,11 @@ class BrokerReconciler:
         return self._finish(recovered, updated, closed, discrepancies)
 
     def _finish(
-        self, recovered: int, updated: int, closed: int, discrepancies: list[str],
+        self,
+        recovered: int,
+        updated: int,
+        closed: int,
+        discrepancies: list[str],
     ) -> ReconciliationResult:
         reconciled = not discrepancies
         if not reconciled:

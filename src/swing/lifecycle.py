@@ -11,7 +11,6 @@ from .config import SwingSettings
 from .database import SwingDatabase
 from .models import PositionLifecycleState, SetupType, TimeStopAction, TradeThesis
 
-
 LEGAL_TRANSITIONS: dict[PositionLifecycleState, frozenset[PositionLifecycleState]] = {
     PositionLifecycleState.OPEN: frozenset({PositionLifecycleState.PROTECTED, PositionLifecycleState.EXIT_PENDING}),
     PositionLifecycleState.PROTECTED: frozenset({PositionLifecycleState.PROFITABLE, PositionLifecycleState.EXIT_PENDING}),
@@ -51,11 +50,7 @@ class TimeStopPolicy:
         if inputs.days_held < 0:
             raise ValueError("days_held cannot be negative")
         due_to_maximum = inputs.days_held >= inputs.max_hold_days
-        dead_after_expected_window = (
-            inputs.days_held >= inputs.expected_hold_days
-            and inputs.progress_r < self.settings.time_stop_minimum_progress_r
-            and inputs.trend_degradation
-        )
+        dead_after_expected_window = inputs.days_held >= inputs.expected_hold_days and inputs.progress_r < self.settings.time_stop_minimum_progress_r and inputs.trend_degradation
         if not due_to_maximum and not dead_after_expected_window:
             return LifecycleDecision(
                 state=PositionLifecycleState.PROTECTED,
@@ -201,3 +196,43 @@ class PositionLifecycleService:
         current = self.database.get_position_lifecycle(trade_id)
         state = PositionLifecycleState(current["state"]) if current else PositionLifecycleState.OPEN
         return LifecycleDecision(state=state, reason="No deterministic exit trigger", reason_code="HOLD_NO_EXIT_TRIGGER")
+
+    def evaluate_stop_management(
+        self,
+        trade_id: str,
+        *,
+        current_price: float,
+        high_watermark: float,
+    ) -> LifecycleDecision:
+        thesis = self.database.get_trade_thesis(trade_id)
+        current = self.database.get_position_lifecycle(trade_id)
+        if thesis is None or current is None:
+            raise ValueError("Stop management requires both immutable thesis and persisted lifecycle")
+        state = PositionLifecycleState(current["state"])
+        if state not in {PositionLifecycleState.PROTECTED, PositionLifecycleState.PROFITABLE, PositionLifecycleState.TRAILING}:
+            raise IllegalLifecycleTransition(f"Stop policy cannot evaluate lifecycle state {state.value}")
+        decision = self.stop_policy.evaluate(
+            thesis=thesis,
+            current_stop=float(current["current_stop"]),
+            current_price=current_price,
+            high_watermark=high_watermark,
+        )
+        if state == PositionLifecycleState.PROTECTED and decision.state in {PositionLifecycleState.PROFITABLE, PositionLifecycleState.TRAILING}:
+            self.transition(
+                trade_id,
+                PositionLifecycleState.PROFITABLE,
+                trigger="profit_threshold",
+                reason_code="POSITION_REACHED_PROFITABLE_R",
+                context={"current_price": current_price},
+            )
+            state = PositionLifecycleState.PROFITABLE
+        if state == PositionLifecycleState.PROFITABLE and decision.state == PositionLifecycleState.TRAILING:
+            self.transition(
+                trade_id,
+                PositionLifecycleState.TRAILING,
+                trigger="named_stop_policy",
+                reason_code=decision.reason_code,
+                context={"policy": self.stop_policy.name, "proposed_stop": decision.proposed_stop},
+            )
+        self.database.update_position_runtime(trade_id, high_watermark=high_watermark)
+        return decision

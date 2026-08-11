@@ -25,9 +25,12 @@ def test_partial_fill_is_persisted(settings, database, proposal, candidate, quot
     enabled = replace(settings, trading_enabled=True)
     broker = FakeBrokerProvider(quotes={"XYZ": quote})
     broker.next_status = "partially_filled"
+    broker.next_filled_quantity = 1
+    broker.next_average_fill_price = 100
     result = SwingExecutionService(enabled, database, broker).submit(proposal, candidate, dry_run=False)
     assert result.status == "PARTIALLY_FILLED"
     assert database.get_trade(result.trade_id)["status"] == "PARTIALLY_FILLED"
+    assert database.get_position_lifecycle(result.trade_id)["state"] == "PROTECTED"
 
 
 def test_broker_timeout_is_not_retried_as_duplicate(settings, database, proposal, candidate, quote):

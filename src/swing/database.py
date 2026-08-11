@@ -21,13 +21,18 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from hashlib import sha256
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterator
 
-from .models import PositionLifecycleState, PostmortemRecord, SwingCandidate, TradeThesis
+from .models import (
+    PositionLifecycleState,
+    PostmortemRecord,
+    SwingCandidate,
+    TradeThesis,
+)
 
 
 def _turso_serverless():
@@ -211,6 +216,16 @@ CREATE TABLE IF NOT EXISTS operational_alerts (
     code TEXT NOT NULL,
     message TEXT NOT NULL,
     payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS live_ticket_approvals (
+    decision_id TEXT PRIMARY KEY,
+    intent_id TEXT NOT NULL UNIQUE,
+    candidate_json TEXT NOT NULL,
+    proposal_json TEXT NOT NULL,
+    risk_json TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS agent_decisions (
     agent_decision_id TEXT PRIMARY KEY,
@@ -941,9 +956,21 @@ class SwingDatabase:
         if values.get("trade_id") is None or values.get("trade_id") == "":
             raise ValueError("trade_id is required")
         required = {
-            "trade_id", "decision_id", "ticker", "setup_type", "status", "strategy_version",
-            "initial_stop", "final_stop", "target", "shares", "planned_dollar_risk",
-            "planned_account_risk_pct", "planned_rr", "market_regime", "candidate_score",
+            "trade_id",
+            "decision_id",
+            "ticker",
+            "setup_type",
+            "status",
+            "strategy_version",
+            "initial_stop",
+            "final_stop",
+            "target",
+            "shares",
+            "planned_dollar_risk",
+            "planned_account_risk_pct",
+            "planned_rr",
+            "market_regime",
+            "candidate_score",
             "risk_validation_result",
         }
         missing = sorted(required - values.keys())
@@ -984,9 +1011,23 @@ class SwingDatabase:
         if not values:
             return
         immutable = {
-            "decision_id", "intent_id", "candidate_id", "ticker", "setup_type", "strategy_version",
-            "initial_stop", "target", "planned_dollar_risk", "planned_account_risk_pct", "planned_rr",
-            "market_regime", "candidate_score", "bull_thesis", "bear_thesis", "pm_reasoning", "reason_entry",
+            "decision_id",
+            "intent_id",
+            "candidate_id",
+            "ticker",
+            "setup_type",
+            "strategy_version",
+            "initial_stop",
+            "target",
+            "planned_dollar_risk",
+            "planned_account_risk_pct",
+            "planned_rr",
+            "market_regime",
+            "candidate_score",
+            "bull_thesis",
+            "bear_thesis",
+            "pm_reasoning",
+            "reason_entry",
         }
         attempted = sorted(immutable.intersection(values))
         if attempted:
@@ -1082,6 +1123,43 @@ class SwingDatabase:
                 (now, acknowledged_by, reason),
             )
         self.set_state("reconciliation_halt", False, f"human:{acknowledged_by}")
+
+    def record_live_ticket_approval(
+        self,
+        *,
+        decision_id: str,
+        intent_id: str,
+        candidate: dict[str, Any],
+        proposal: dict[str, Any],
+        risk: dict[str, Any],
+        expires_at: str,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO live_ticket_approvals(decision_id,intent_id,candidate_json,proposal_json,risk_json,expires_at,created_at) VALUES(?,?,?,?,?,?,?)",
+                (decision_id, intent_id, _json(candidate), _json(proposal), _json(risk), expires_at, _now()),
+            )
+
+    def consume_live_ticket_approval(self, decision_id: str) -> dict[str, Any]:
+        now = _now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM live_ticket_approvals WHERE decision_id=? AND consumed_at IS NULL",
+                (decision_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("No unused deterministic live-ticket approval exists for this decision")
+            if str(row["expires_at"]) < now:
+                raise ValueError("Live-ticket approval expired; re-run every deterministic gate")
+            connection.execute(
+                "UPDATE live_ticket_approvals SET consumed_at=? WHERE decision_id=? AND consumed_at IS NULL",
+                (now, decision_id),
+            )
+        result = dict(row)
+        for field in ("candidate_json", "proposal_json", "risk_json"):
+            result[field] = json.loads(result[field])
+        return result
 
     def record_trade_snapshot(
         self,

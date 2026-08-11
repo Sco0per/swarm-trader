@@ -9,7 +9,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .config import SwingSettings
 from .database import SwingDatabase
-from .models import Decision, LLMReviewDecision, MarketRegime, SetupType, SwingCandidate, TradeProposal
+from .models import (
+    Decision,
+    LLMReviewDecision,
+    MarketRegime,
+    SetupType,
+    SwingCandidate,
+    TradeProposal,
+)
 
 
 class TechnicalSwingAnalysis(BaseModel):
@@ -195,9 +202,7 @@ class AgentPipeline:
                     candidate,
                     {
                         "candidate": catalyst_context,
-                        "instruction": (
-                            "Act as the catalyst/fundamental analyst. Look for earnings, guidance, offerings, dilution, corporate actions, lawsuits, regulation, acquisitions, FDA events, executive departures, sector news, macro catalysts, and abnormal headline risk. Missing evidence is a data gap."
-                        ),
+                        "instruction": ("Act as the catalyst/fundamental analyst. Look for earnings, guidance, offerings, dilution, corporate actions, lawsuits, regulation, acquisitions, FDA events, executive departures, sector news, macro catalysts, and abnormal headline risk. Missing evidence is a data gap."),
                     },
                     FundamentalEventAnalysis,
                 )
@@ -219,7 +224,7 @@ class AgentPipeline:
                 if bear.kill_trade:
                     continue
                 finalists.append((candidate, technical, fundamental, bear))
-            except (ModelUnavailable, ValueError, TypeError, RuntimeError):
+            except Exception:
                 continue
 
         proposals: list[TradeProposal] = []
@@ -262,6 +267,6 @@ class AgentPipeline:
                         strategy_version=self.settings.strategy_version,
                     )
                 )
-            except (ModelUnavailable, ValueError, TypeError, RuntimeError):
+            except Exception:
                 continue
         return proposals

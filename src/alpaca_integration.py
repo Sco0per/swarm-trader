@@ -17,10 +17,11 @@ The optional `mode` parameter is legacy and must be "swing" or None.
 """
 
 import os
-import requests
 from datetime import datetime
 
-from src.accounts import get_account_for_mode, AlpacaAccount
+import requests
+
+from src.accounts import AlpacaAccount, get_account_for_mode
 
 # Always paper trading - never use live endpoint
 ALPACA_BASE_URL = "https://paper-api.alpaca.markets/v2"
@@ -109,10 +110,7 @@ def convert_to_portfolio(
             "short_margin_used": 0.0,
         }
 
-    realized_gains = {
-        ticker: {"long": 0.0, "short": 0.0}
-        for ticker in all_tickers
-    }
+    realized_gains = {ticker: {"long": 0.0, "short": 0.0} for ticker in all_tickers}
 
     return {
         "cash": cash,
@@ -133,6 +131,7 @@ def get_daily_pnl(account: dict) -> float:
 
 
 def _place_alpaca_order(ticker: str, action: str, qty: int, mode: str = None) -> dict:
+    raise RuntimeError("Legacy broker mutation is permanently disabled; use src.swing.execution")
     """Place a market order via Alpaca API."""
     headers = _get_headers(mode)
     side = "buy" if action in ("buy", "cover") else "sell"
@@ -170,6 +169,7 @@ def _place_bracket_order(
     take_profit_price: float,
     mode: str = None,
 ) -> dict:
+    raise RuntimeError("Legacy broker mutation is permanently disabled; use src.swing.execution")
     """Place a bracket order via Alpaca API (entry + stop-loss + take-profit as one atomic order).
 
     Args:
@@ -223,6 +223,7 @@ def flatten_positions(
     tickers: list[str] | None = None,
     mode: str = None,
 ) -> list[dict]:
+    raise RuntimeError("Legacy broker mutation is permanently disabled; use the reconciled swing lifecycle")
     """Market-sell all open positions (end-of-day flatten).
 
     Args:
@@ -249,14 +250,16 @@ def flatten_positions(
         abs_qty = abs(qty)
 
         if dry_run:
-            results.append({
-                "ticker": symbol,
-                "action": "flatten",
-                "qty": abs_qty,
-                "side": side,
-                "success": True,
-                "dry_run": True,
-            })
+            results.append(
+                {
+                    "ticker": symbol,
+                    "action": "flatten",
+                    "qty": abs_qty,
+                    "side": side,
+                    "success": True,
+                    "dry_run": True,
+                }
+            )
         else:
             order_data = {
                 "symbol": symbol,
@@ -273,23 +276,27 @@ def flatten_positions(
             )
             if resp.status_code in (200, 201):
                 order = resp.json()
-                results.append({
-                    "ticker": symbol,
-                    "action": "flatten",
-                    "qty": abs_qty,
-                    "side": side,
-                    "success": True,
-                    "order_id": order.get("id"),
-                    "status": order.get("status"),
-                })
+                results.append(
+                    {
+                        "ticker": symbol,
+                        "action": "flatten",
+                        "qty": abs_qty,
+                        "side": side,
+                        "success": True,
+                        "order_id": order.get("id"),
+                        "status": order.get("status"),
+                    }
+                )
             else:
-                results.append({
-                    "ticker": symbol,
-                    "action": "flatten",
-                    "qty": abs_qty,
-                    "success": False,
-                    "reason": f"Alpaca API error {resp.status_code}: {resp.text[:200]}",
-                })
+                results.append(
+                    {
+                        "ticker": symbol,
+                        "action": "flatten",
+                        "qty": abs_qty,
+                        "success": False,
+                        "reason": f"Alpaca API error {resp.status_code}: {resp.text[:200]}",
+                    }
+                )
 
     return results
 
@@ -301,6 +308,7 @@ def execute_decisions(
     dry_run: bool = True,
     mode: str = None,
 ) -> list[dict]:
+    raise RuntimeError("Legacy execution decisions are permanently disabled; use src.swing.execution")
     """Execute trading decisions with V2 risk validation.
 
     Validation for buy/short orders is delegated to risk_manager.validate_trade().
@@ -319,11 +327,10 @@ def execute_decisions(
         List of result dicts with success/failure info per ticker
     """
     if not dry_run:
-        raise RuntimeError(
-            "Direct legacy execution is disabled. Submit entries through src.swing.execution.SwingExecutionService."
-        )
+        raise RuntimeError("Direct legacy execution is disabled. Submit entries through src.swing.execution.SwingExecutionService.")
 
     from src.config import resolve_mode
+
     if mode is None:
         mode = resolve_mode()
 
@@ -331,7 +338,9 @@ def execute_decisions(
     risk_manager_available = False
     rm_portfolio_state = None
     try:
-        from risk_manager import validate_trade as rm_validate_trade, get_portfolio_state as rm_get_portfolio_state
+        from risk_manager import get_portfolio_state as rm_get_portfolio_state
+        from risk_manager import validate_trade as rm_validate_trade
+
         risk_manager_available = True
         try:
             rm_portfolio_state = rm_get_portfolio_state(mode=mode)
@@ -356,26 +365,30 @@ def execute_decisions(
         trail_percent = decision.get("trail_percent")
 
         if action == "hold" or qty <= 0:
-            results.append({
-                "ticker": ticker,
-                "action": action,
-                "qty": qty,
-                "success": False,
-                "reason": "Hold — no trade needed",
-                "skipped": True,
-            })
+            results.append(
+                {
+                    "ticker": ticker,
+                    "action": action,
+                    "qty": qty,
+                    "success": False,
+                    "reason": "Hold — no trade needed",
+                    "skipped": True,
+                }
+            )
             continue
 
         if action in ("buy", "short"):
-            results.append({
-                "ticker": ticker,
-                "action": action,
-                "qty": qty,
-                "confidence": confidence,
-                "success": False,
-                "reason": "Legacy entry path disabled; use src.swing.execution.SwingExecutionService",
-                "rule": "legacy_entry_disabled",
-            })
+            results.append(
+                {
+                    "ticker": ticker,
+                    "action": action,
+                    "qty": qty,
+                    "confidence": confidence,
+                    "success": False,
+                    "reason": "Legacy entry path disabled; use src.swing.execution.SwingExecutionService",
+                    "rule": "legacy_entry_disabled",
+                }
+            )
             continue
 
         # V2 risk manager validation for entries
@@ -391,15 +404,17 @@ def execute_decisions(
                 mode=mode,
             )
             if not rm_result.approved:
-                results.append({
-                    "ticker": ticker,
-                    "action": action,
-                    "qty": qty,
-                    "confidence": confidence,
-                    "success": False,
-                    "reason": rm_result.reason,
-                    "rule": rm_result.rule,
-                })
+                results.append(
+                    {
+                        "ticker": ticker,
+                        "action": action,
+                        "qty": qty,
+                        "confidence": confidence,
+                        "success": False,
+                        "reason": rm_result.reason,
+                        "rule": rm_result.rule,
+                    }
+                )
                 continue
 
         use_bracket = stop_price is not None and take_profit is not None and order_type != "oco"
@@ -443,13 +458,15 @@ def execute_decisions(
                 order_result = _place_trailing_stop(ticker, action, qty, float(trail_percent), mode=mode)
             else:
                 order_result = _place_alpaca_order(ticker, action, qty, mode=mode)
-            results.append({
-                "ticker": ticker,
-                "action": action,
-                "qty": qty,
-                "confidence": confidence,
-                **order_result,
-            })
+            results.append(
+                {
+                    "ticker": ticker,
+                    "action": action,
+                    "qty": qty,
+                    "confidence": confidence,
+                    **order_result,
+                }
+            )
 
     return results
 
@@ -489,6 +506,7 @@ def get_order(order_id: str, mode: str = None) -> dict:
 
 
 def cancel_order(order_id: str, mode: str = None) -> dict:
+    raise RuntimeError("Legacy broker mutation is permanently disabled; use the reconciled swing lifecycle")
     """Cancel a single open order by ID.
 
     Returns:
@@ -506,6 +524,7 @@ def cancel_order(order_id: str, mode: str = None) -> dict:
 
 
 def cancel_all_orders(mode: str = None) -> dict:
+    raise RuntimeError("Legacy broker mutation is permanently disabled; use the reconciled swing lifecycle")
     """Cancel all open orders.
 
     Returns:
@@ -531,6 +550,7 @@ def _place_limit_order(
     time_in_force: str = "day",
     mode: str = None,
 ) -> dict:
+    raise RuntimeError("Legacy broker mutation is permanently disabled; use src.swing.execution")
     """Place a limit order via Alpaca API."""
     headers = _get_headers(mode)
     side = "buy" if action in ("buy", "cover") else "sell"
@@ -563,6 +583,7 @@ def _place_stop_order(
     time_in_force: str = "gtc",
     mode: str = None,
 ) -> dict:
+    raise RuntimeError("Legacy broker mutation is permanently disabled; use src.swing.execution")
     """Place a standalone stop order via Alpaca API.
 
     Use this for stop-losses on EXISTING positions (not as part of a bracket entry).
@@ -598,6 +619,7 @@ def _place_trailing_stop(
     time_in_force: str = "gtc",
     mode: str = None,
 ) -> dict:
+    raise RuntimeError("Legacy broker mutation is permanently disabled; use src.swing.execution")
     """Place a trailing stop order via Alpaca API.
 
     Args:
@@ -635,6 +657,7 @@ def _place_oco_order(
     take_profit_price: float,
     mode: str = None,
 ) -> dict:
+    raise RuntimeError("Legacy broker mutation is permanently disabled; use src.swing.execution")
     """Place an OCO (One-Cancels-Other) order via Alpaca API.
 
     Use for managing exits on ALREADY HELD positions — no new entry leg.
@@ -681,7 +704,5 @@ def format_positions_summary(positions_raw: list[dict], account: dict) -> str:
         market_value = float(pos.get("market_value", 0))
         unrealized_pl = float(pos.get("unrealized_pl", 0))
         pl_sign = "+" if unrealized_pl >= 0 else ""
-        lines.append(
-            f"  {symbol}: {qty:.0f} shares  ${market_value:,.2f}  ({pl_sign}{unrealized_pl:,.2f} P&L)"
-        )
+        lines.append(f"  {symbol}: {qty:.0f} shares  ${market_value:,.2f}  ({pl_sign}{unrealized_pl:,.2f} P&L)")
     return "\n".join(lines)

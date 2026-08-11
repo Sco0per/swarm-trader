@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -17,9 +17,16 @@ from .data_feed import load_scan_inputs
 from .database import SCHEMA_VERSION, SwingDatabase
 from .execution import SwingExecutionService
 from .lessons_review import review_observations
+from .lifecycle import PositionLifecycleService
 from .llm_backend import AnthropicStructuredBackend
 from .market import DeterministicSwingScanner
-from .models import SwingCandidate, TradeProposal
+from .models import (
+    RiskDecision,
+    SwingCandidate,
+    TechnicalThesis,
+    TradeProposal,
+    TradeThesis,
+)
 from .postmortem import PostmortemEngine
 from .reconciliation import BrokerReconciler
 from .reporting import ReportingService
@@ -245,6 +252,14 @@ def main() -> int:
         print(result.model_dump_json(indent=2))
         if result.status == "DRY_RUN_APPROVED":
             quote = broker.get_quote(proposal.ticker)
+            database.record_live_ticket_approval(
+                decision_id=proposal.decision_id,
+                intent_id=result.intent_id,
+                candidate=candidate.model_dump(mode="json"),
+                proposal=proposal.model_dump(mode="json"),
+                risk=result.risk.model_dump(mode="json"),
+                expires_at=(datetime.now(timezone.utc) + timedelta(seconds=settings.quote_freshness_seconds)).isoformat(),
+            )
             print("\n--- APPROVED LIVE ORDER TICKET: execute this yourself. Nothing was sent to Robinhood. ---")
             print(
                 json.dumps(
@@ -253,8 +268,8 @@ def main() -> int:
                         "side": "buy",
                         "quantity": result.risk.quantity,
                         "limit_price": round(quote.last, 2),
-                        "stop_price": proposal.stop,
-                        "target_price": proposal.target,
+                        "stop_price": result.risk.authoritative_stop,
+                        "target_price": candidate.resistance,
                         "planned_dollar_risk": result.risk.planned_dollar_risk,
                         "planned_account_risk_pct": result.risk.planned_account_risk_pct,
                     },
@@ -265,41 +280,80 @@ def main() -> int:
         if settings.execution_mode != "live":
             raise ValueError("record-live-fill requires EXECUTION_MODE=live")
         payload = json.loads(args.input.read_text(encoding="utf-8"))
-        candidate = SwingCandidate.model_validate(payload["candidate"])
-        proposal = TradeProposal.model_validate(payload["proposal"])
+        decision_id = str(payload["proposal"]["decision_id"])
+        approval = database.consume_live_ticket_approval(decision_id)
+        candidate = SwingCandidate.model_validate(approval["candidate_json"])
+        proposal = TradeProposal.model_validate(approval["proposal_json"])
+        risk = RiskDecision.model_validate(approval["risk_json"])
         fill = payload["fill"]
+        if risk.authoritative_stop is None or not risk.approved:
+            raise ValueError("Stored ticket has no approved authoritative risk decision")
+        if int(fill["shares"]) != fill["shares"] or int(fill["shares"]) != risk.quantity:
+            raise ValueError("Recorded fill quantity must exactly match the whole-share approved ticket")
+        if fill.get("protective_status") != "active" or not fill.get("protective_stop_order_id") or not fill.get("target_order_id"):
+            raise ValueError("Recorded live fill must prove active broker-native stop and target orders")
+        actual_entry = float(fill["entry_price"])
+        current_rr = (candidate.resistance - actual_entry) / (actual_entry - risk.authoritative_stop)
+        if actual_entry > candidate.price + settings.maximum_entry_slippage_r * (candidate.price - risk.authoritative_stop) or current_rr < settings.minimum_rr:
+            database.activate_halt("reconciliation_halt", "Manual live fill diverged from approved entry geometry", "record-live-fill")
+            raise ValueError("Manual live fill exceeded approved slippage or no longer meets minimum R:R; trading halted")
         trade_id = str(uuid4())
         database.record_candidate(candidate)
-        database.add_trade(
-            {
-                "trade_id": trade_id,
-                "decision_id": proposal.decision_id,
-                "candidate_id": candidate.candidate_id,
-                "ticker": proposal.ticker,
-                "setup_type": proposal.setup_type.value,
-                "status": "OPEN",
-                "strategy_version": proposal.strategy_version,
-                "entry_datetime": fill["entry_datetime"],
-                "entry_price": fill["entry_price"],
-                "initial_stop": proposal.stop,
-                "final_stop": proposal.stop,
-                "target": proposal.target,
-                "shares": fill["shares"],
-                "position_value": fill["shares"] * fill["entry_price"],
-                "planned_dollar_risk": fill.get("planned_dollar_risk", (fill["entry_price"] - proposal.stop) * fill["shares"]),
-                "planned_account_risk_pct": fill.get("planned_account_risk_pct", 0.0),
-                "planned_rr": proposal.planned_rr,
-                "market_regime": proposal.market_regime.value,
-                "sector": candidate.sector,
-                "candidate_score": candidate.score,
-                "bull_thesis": proposal.bull_case,
-                "bear_thesis": proposal.bear_case,
-                "reason_entry": proposal.bull_case,
-                "broker_provider": "robinhood-human-supervised",
-                "broker_order_id": fill.get("broker_order_id"),
-                "order_type": "manual-live",
-                "risk_validation_result": json.dumps({"note": "approved via live-ticket; executed manually by a human"}),
-            }
+        trade_values = {
+            "trade_id": trade_id,
+            "decision_id": proposal.decision_id,
+            "candidate_id": candidate.candidate_id,
+            "ticker": proposal.ticker,
+            "setup_type": proposal.setup_type.value,
+            "status": "OPEN",
+            "strategy_version": proposal.strategy_version,
+            "entry_datetime": fill["entry_datetime"],
+            "entry_price": fill["entry_price"],
+            "initial_stop": risk.authoritative_stop,
+            "final_stop": risk.authoritative_stop,
+            "target": candidate.resistance,
+            "shares": fill["shares"],
+            "position_value": fill["shares"] * fill["entry_price"],
+            "planned_dollar_risk": (actual_entry - risk.authoritative_stop) * int(fill["shares"]),
+            "planned_account_risk_pct": risk.planned_account_risk_pct,
+            "planned_rr": current_rr,
+            "market_regime": proposal.market_regime.value,
+            "sector": candidate.sector,
+            "candidate_score": candidate.score,
+            "bull_thesis": proposal.bull_case,
+            "bear_thesis": proposal.bear_case,
+            "reason_entry": proposal.bull_case,
+            "broker_provider": "robinhood-human-supervised",
+            "broker_order_id": fill.get("broker_order_id"),
+            "order_type": "manual-live",
+            "risk_validation_result": risk.model_dump_json(),
+        }
+        thesis = TradeThesis(
+            ticker=proposal.ticker,
+            setup=proposal.setup_type,
+            entry=actual_entry,
+            initial_stop=risk.authoritative_stop,
+            initial_target=candidate.resistance,
+            initial_risk_dollars=(actual_entry - risk.authoritative_stop) * int(fill["shares"]),
+            initial_risk_per_share=actual_entry - risk.authoritative_stop,
+            initial_rr=current_rr,
+            entry_score=candidate.score,
+            market_regime=candidate.market_regime.value,
+            expected_hold_days=settings.expected_hold_days,
+            max_hold_days=settings.maximum_hold_days,
+            technical_thesis=TechnicalThesis(trend=candidate.sector_trend, support=candidate.support, trigger=actual_entry),
+            invalidations=(proposal.invalidation, "setup structure failure"),
+        )
+        database.add_trade_with_thesis(trade_values, thesis)
+        lifecycle = PositionLifecycleService(settings, database)
+        lifecycle.create_open(trade_id, current_stop=risk.authoritative_stop, trigger="human_recorded_live_fill")
+        lifecycle.mark_protected(
+            trade_id,
+            evidence={
+                "protective_stop_order_id": fill["protective_stop_order_id"],
+                "target_order_id": fill["target_order_id"],
+                "source": "human_verified",
+            },
         )
         print(json.dumps({"trade_id": trade_id, "status": "recorded"}, indent=2))
     elif args.command == "record-live-exit":
@@ -308,6 +362,8 @@ def main() -> int:
             raise KeyError(args.trade_id)
         high, low = database.trade_price_extremes(args.trade_id, float(trade["entry_price"]))
         engine = PostmortemEngine(database, consecutive_loss_halt=settings.consecutive_loss_halt)
+        lifecycle = PositionLifecycleService(settings, database)
+        lifecycle.request_exit(args.trade_id, trigger="manual_safety_exit", reason_code="EXIT_MANUAL_SAFETY")
         record = engine.close_and_review(
             args.trade_id,
             exit_price=args.exit_price,
@@ -315,6 +371,7 @@ def main() -> int:
             low_during_trade=min(low, args.exit_price),
             reason_exit=args.reason,
         )
+        lifecycle.mark_closed(args.trade_id, reason_code="CLOSED_MANUAL_RECONCILED", context={"exit_price": args.exit_price})
         print(record.model_dump_json(indent=2))
     return 0
 

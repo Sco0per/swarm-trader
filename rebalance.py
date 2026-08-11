@@ -15,8 +15,9 @@ import argparse
 import json
 import os
 import sys
-import requests
 from datetime import datetime
+
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -44,6 +45,7 @@ def get_positions():
 
 
 def place_sell_order(ticker, qty):
+    raise RuntimeError("Legacy rebalance execution is permanently disabled; use the reconciled swing lifecycle")
     order = {
         "symbol": ticker,
         "qty": str(qty),
@@ -72,6 +74,9 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.execute:
+        raise RuntimeError("Legacy rebalance execution is permanently disabled")
+
     mode = resolve_mode(cli_mode=args.mode)
     mode_config = get_mode_config(mode)
     mode_label = mode_config["label"]
@@ -96,10 +101,7 @@ def main():
     positions = get_positions()
 
     # Find positions outside the active universe
-    out_of_universe = {
-        sym: pos for sym, pos in positions.items()
-        if sym not in universe_tickers
-    }
+    out_of_universe = {sym: pos for sym, pos in positions.items() if sym not in universe_tickers}
 
     if not out_of_universe:
         print(f"✅ All positions are within the {mode.upper()} universe. Nothing to rebalance.")
@@ -121,10 +123,7 @@ def main():
             continue
 
         pl_sign = "+" if unrealized_pl >= 0 else ""
-        print(
-            f"  📉 {ticker}: {total_shares} shares @ ${current_price:,.2f}"
-            f" = ${market_value:,.2f} ({pl_sign}${unrealized_pl:,.2f} P&L)"
-        )
+        print(f"  📉 {ticker}: {total_shares} shares @ ${current_price:,.2f}" f" = ${market_value:,.2f} ({pl_sign}${unrealized_pl:,.2f} P&L)")
 
         if dry_run:
             print(f"     → DRY RUN: would sell all {total_shares} shares")
