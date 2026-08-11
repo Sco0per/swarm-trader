@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "swarm-trader"
+name = "ultimate-swing-trader"
 version = "1.0.0"
 description = "A conservative adaptive long-only swing-trading research and paper-execution system"
 authors = ["Your Name <your.email@example.com>"]

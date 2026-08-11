@@ -1,6 +1,6 @@
-# Swarm Trader
+# Ultimate Swing Trader
 
-Swarm Trader is a focused, long-only, AI-assisted swing-trading research and Alpaca paper-execution framework. Its purpose is to measure whether three deterministic setups have positive expectancy on an approximately $2,000 account. It is not a production or unattended real-money trading system.
+Ultimate Swing Trader is a focused, long-only, AI-assisted swing-trading research and Alpaca paper-execution framework. Its purpose is to measure whether three deterministic setups have positive expectancy on an approximately $2,000 account. It is not a production or unattended real-money trading system.
 
 Python owns setup classification, entry geometry, structural invalidation, target, risk, quantity, portfolio admission, and execution eligibility. Models may critique a valid candidate and veto it; they cannot create a setup, set a price, size a position, loosen a rule, or place an order.
 

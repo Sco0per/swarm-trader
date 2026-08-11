@@ -1,4 +1,4 @@
-# Swarm Trader Refactor — Standing Rules
+# Ultimate Swing Trader Refactor — Standing Rules
 
 Save this file into the repo as `docs/REFACTOR_RULES.md` and commit it **before running prompt 01**.
 
