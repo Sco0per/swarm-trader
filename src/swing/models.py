@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -106,6 +106,9 @@ class SwingCandidate(BaseModel):
     setup_type: SetupType
     score: float = Field(ge=0, le=100)
     score_components: dict[str, float]
+    score_route: Literal["reject", "watchlist", "strong", "very_strong"] = "strong"
+    validator_features: dict[str, Any] = Field(default_factory=dict)
+    validator_failures: list[str] = Field(default_factory=list)
     market_regime: MarketRegime
     sector: str
     sector_etf: str | None = None

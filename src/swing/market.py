@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from collections import Counter
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Mapping
 
 import numpy as np
@@ -12,6 +13,8 @@ import pandas as pd
 from .config import SwingSettings
 from .models import MarketRegime, SetupType, SwingCandidate, TimestampedData
 from .risk import LEVERAGED_OR_INVERSE_ETFS
+from .strategy import score_entry, score_inputs_from_validation, validate_setup
+from .universe import UNIVERSE_VERSION
 
 
 SECTOR_ETFS = {
@@ -34,12 +37,57 @@ class UniverseAsset:
     symbol: str
     sector: str = "Unknown"
     is_etf: bool = False
-    is_tradable: bool = True
-    is_halted: bool = False
+    asset_class: str = "us_equity"
+    security_type: str = "common_stock"
+    is_tradable: bool | None = True
+    is_halted: bool | None = False
+    halt_status_known: bool = True
+    broker_restricted: bool = False
+    existing_holding: bool = False
     is_leveraged_or_inverse: bool = False
     earnings_trading_days: int | None = None
+    prohibited_event_risk: bool | None = False
     bid: float | None = None
     ask: float | None = None
+    quote_timestamp: datetime | None = None
+
+
+@dataclass(frozen=True)
+class FunnelRejection:
+    symbol: str
+    stage: str
+    reason_code: str
+    details: tuple[str, ...] = ()
+
+
+@dataclass
+class ScanFunnelReport:
+    universe_version: str = UNIVERSE_VERSION
+    scanned: int = 0
+    passed_liquidity_history: int = 0
+    trend_rs_eligible: int = 0
+    setup_matches: int = 0
+    strong_candidates: int = 0
+    rejection_counts: Counter[str] = field(default_factory=Counter)
+    rejections: list[FunnelRejection] = field(default_factory=list)
+    result: str = "NO_TRADE"
+
+    def reject(self, symbol: str, stage: str, reason_code: str, details: tuple[str, ...] = ()) -> None:
+        self.rejection_counts[reason_code] += 1
+        self.rejections.append(FunnelRejection(symbol, stage, reason_code, details))
+
+    def as_dict(self) -> dict:
+        return {
+            "universe_version": self.universe_version,
+            "scanned": self.scanned,
+            "passed_liquidity_history": self.passed_liquidity_history,
+            "trend_rs_eligible": self.trend_rs_eligible,
+            "setup_matches": self.setup_matches,
+            "strong_candidates": self.strong_candidates,
+            "rejection_counts": dict(sorted(self.rejection_counts.items())),
+            "rejections": [rejection.__dict__ for rejection in self.rejections],
+            "result": self.result,
+        }
 
 
 def _frame(raw: pd.DataFrame | list[dict]) -> pd.DataFrame:
@@ -52,7 +100,6 @@ def _frame(raw: pd.DataFrame | list[dict]) -> pd.DataFrame:
     required = {"open", "high", "low", "close", "volume"}
     if not required.issubset(frame.columns):
         raise ValueError(f"OHLCV data missing {sorted(required - set(frame.columns))}")
-    frame = frame.dropna(subset=list(required)).sort_index()
     return frame.astype({name: float for name in required})
 
 
@@ -148,21 +195,13 @@ class MarketRegimeEngine:
 class DeterministicSwingScanner:
     """Reduce a broad liquid universe to ranked swing candidates before LLM use."""
 
-    WEIGHTS = {
-        "market_regime": 15.0,
-        "trend_quality": 15.0,
-        "setup_quality": 20.0,
-        "relative_strength": 10.0,
-        "volume_confirmation": 10.0,
-        "entry_quality": 10.0,
-        "risk_reward": 10.0,
-        "liquidity": 5.0,
-        "event_risk": 5.0,
-    }
-
     def __init__(self, settings: SwingSettings):
         self.settings = settings
         self.regime_engine = MarketRegimeEngine()
+        from .config import load_symbol_blacklist
+
+        self.blacklist = load_symbol_blacklist(settings.do_not_trade_path)
+        self.last_report = ScanFunnelReport()
 
     def scan(
         self,
@@ -175,124 +214,229 @@ class DeterministicSwingScanner:
         source: str = "unknown",
         retrieved_at: datetime | None = None,
     ) -> list[SwingCandidate]:
+        candidates, report = self.scan_with_report(
+            assets,
+            bars_by_symbol,
+            spy_bars=spy_bars,
+            qqq_bars=qqq_bars,
+            sector_bars=sector_bars,
+            source=source,
+            retrieved_at=retrieved_at,
+        )
+        self.last_report = report
+        return candidates
+
+    def scan_with_report(
+        self,
+        assets: Iterable[UniverseAsset],
+        bars_by_symbol: Mapping[str, pd.DataFrame | list[dict]],
+        *,
+        spy_bars: pd.DataFrame | list[dict],
+        qqq_bars: pd.DataFrame | list[dict],
+        sector_bars: Mapping[str, pd.DataFrame | list[dict]] | None = None,
+        source: str = "unknown",
+        retrieved_at: datetime | None = None,
+    ) -> tuple[list[SwingCandidate], ScanFunnelReport]:
         retrieved_at = retrieved_at or datetime.now(timezone.utc)
         regime, _ = self.regime_engine.classify(spy_bars, qqq_bars)
-        spy = _frame(spy_bars)
         sector_bars = sector_bars or {}
         results: list[SwingCandidate] = []
+        report = ScanFunnelReport()
         for asset in assets:
             symbol = asset.symbol.upper()
-            if not asset.is_tradable or asset.is_halted or asset.is_leveraged_or_inverse or symbol in LEVERAGED_OR_INVERSE_ETFS:
+            report.scanned += 1
+            exclusion = self._exclusion_reason(asset, symbol)
+            if exclusion:
+                report.reject(symbol, "exclusion", exclusion)
                 continue
             raw = bars_by_symbol.get(symbol)
             if raw is None:
+                report.reject(symbol, "liquidity_history", "bars_unavailable")
                 continue
             try:
                 frame = _frame(raw)
             except (TypeError, ValueError):
+                report.reject(symbol, "liquidity_history", "bar_data_malformed")
                 continue
-            if len(frame) < 200:
+            if frame[["open", "high", "low", "close", "volume"]].isna().any(axis=None):
+                report.reject(symbol, "liquidity_history", "bar_data_incomplete")
+                continue
+            if not isinstance(frame.index, pd.DatetimeIndex) or frame.index.has_duplicates or not frame.index.is_monotonic_increasing:
+                report.reject(symbol, "liquidity_history", "bar_timestamps_invalid")
+                continue
+            if len(frame) < self.settings.minimum_history_sessions:
+                report.reject(symbol, "liquidity_history", "insufficient_history")
+                continue
+            market_timestamp = frame.index[-1].to_pydatetime()
+            if market_timestamp.tzinfo is None:
+                market_timestamp = market_timestamp.replace(tzinfo=timezone.utc)
+            age = retrieved_at.astimezone(timezone.utc) - market_timestamp.astimezone(timezone.utc)
+            if age < -timedelta(days=1) or age > timedelta(days=self.settings.strategy.maximum_bar_age_calendar_days):
+                report.reject(symbol, "liquidity_history", "bar_data_stale")
                 continue
             close = frame["close"]
             price = float(close.iloc[-1])
-            adv20 = float(frame["volume"].tail(20).mean())
-            if price <= self.settings.minimum_price or adv20 <= self.settings.minimum_average_volume:
+            liquidity_window = self.settings.strategy.short_ema_period
+            adv20 = float(frame["volume"].tail(liquidity_window).mean())
+            average_dollar_volume = float((frame["close"] * frame["volume"]).tail(liquidity_window).mean())
+            if price <= self.settings.minimum_price:
+                report.reject(symbol, "liquidity_history", "minimum_price")
                 continue
-            spread = None
-            if asset.bid and asset.ask and asset.bid > 0:
-                spread = (asset.ask - asset.bid) / ((asset.ask + asset.bid) / 2)
-                if spread > self.settings.maximum_spread_pct:
+            if adv20 <= self.settings.minimum_average_volume:
+                report.reject(symbol, "liquidity_history", "minimum_average_volume")
+                continue
+            if average_dollar_volume <= self.settings.minimum_average_dollar_volume:
+                report.reject(symbol, "liquidity_history", "minimum_average_dollar_volume")
+                continue
+            if asset.bid is None or asset.ask is None or asset.bid <= 0 or asset.ask <= asset.bid:
+                report.reject(symbol, "liquidity_history", "spread_unavailable")
+                continue
+            if asset.quote_timestamp is not None:
+                quote_timestamp = asset.quote_timestamp
+                if quote_timestamp.tzinfo is None:
+                    report.reject(symbol, "liquidity_history", "quote_timestamp_invalid")
                     continue
-            candidate = self._score(asset, frame, spy, sector_bars, regime, source, retrieved_at, spread)
-            if candidate is not None:
-                results.append(candidate)
+                quote_age = retrieved_at.astimezone(timezone.utc) - quote_timestamp.astimezone(timezone.utc)
+                if quote_age.total_seconds() < 0 or quote_age > timedelta(seconds=self.settings.quote_freshness_seconds):
+                    report.reject(symbol, "liquidity_history", "quote_stale")
+                    continue
+            spread = (asset.ask - asset.bid) / ((asset.ask + asset.bid) / 2)
+            if spread >= self.settings.maximum_spread_pct:
+                report.reject(symbol, "liquidity_history", "maximum_spread")
+                continue
+            report.passed_liquidity_history += 1
+            medium = sma(close, self.settings.strategy.medium_ma_period)
+            stock_rs = roc(close, self.settings.strategy.relative_strength_lookback) - roc(
+                _frame(spy_bars)["close"], self.settings.strategy.relative_strength_lookback
+            )
+            if medium is None or not (
+                price > medium
+                and (
+                    _slope(close, self.settings.strategy.medium_ma_period, self.settings.strategy.trend_slope_lookback)
+                    > self.settings.strategy.minimum_trend_slope
+                    or stock_rs >= self.settings.strategy.minimum_spy_relative_strength
+                )
+            ):
+                report.reject(symbol, "trend_rs", "trend_rs_ineligible")
+                continue
+            report.trend_rs_eligible += 1
+            sector_etf = SECTOR_ETFS.get(asset.sector)
+            sector_raw = sector_bars.get(sector_etf) if sector_etf else None
+            if asset.prohibited_event_risk is None:
+                event_risk = None
+            elif asset.prohibited_event_risk:
+                event_risk = True
+            else:
+                event_risk = (
+                    False
+                    if asset.is_etf
+                    else None
+                    if asset.earnings_trading_days is None
+                    else asset.earnings_trading_days <= self.settings.earnings_exclusion_trading_days
+                )
+            validations = [
+                validate_setup(
+                    setup_type,
+                    frame,
+                    _frame(spy_bars),
+                    sector_bars=_frame(sector_raw) if sector_raw is not None else None,
+                    settings=self.settings,
+                    as_of=retrieved_at,
+                    event_risk_prohibited=event_risk,
+                    liquidity_acceptable=True,
+                    market_regime=regime,
+                )
+                for setup_type in SetupType
+            ]
+            passing = [item for item in validations if item.passed]
+            if not passing:
+                report.reject(
+                    symbol,
+                    "setup",
+                    "setup_no_match",
+                    tuple(f"{item.setup_type.value}:{item.primary_reason}" for item in validations),
+                )
+                continue
+            report.setup_matches += 1
+            scored_validations = [
+                (
+                    item,
+                    score_entry(
+                        score_inputs_from_validation(item, regime, self.settings.strategy),
+                        weights=self.settings.score_weights,
+                        settings=self.settings,
+                        validator_passed=True,
+                        regime=regime,
+                    ),
+                )
+                for item in passing
+            ]
+            validation, score = max(scored_validations, key=lambda pair: (pair[1].total, pair[0].setup_type.value))
+            candidate = self._candidate(
+                asset,
+                frame,
+                sector_raw,
+                regime,
+                source,
+                retrieved_at,
+                spread,
+                validation,
+                score,
+            )
+            results.append(candidate)
+            if score.route in {"strong", "very_strong"}:
+                report.strong_candidates += 1
         results.sort(key=lambda item: (-item.score, item.ticker))
-        return results[: self.settings.maximum_scanner_candidates]
+        results = results[: self.settings.maximum_scanner_candidates]
+        report.result = "CANDIDATES_AVAILABLE" if report.strong_candidates else "NO_TRADE"
+        self.last_report = report
+        return results, report
 
-    def _score(
-        self, asset: UniverseAsset, frame: pd.DataFrame, spy: pd.DataFrame,
-        sector_bars: Mapping[str, pd.DataFrame | list[dict]], regime: MarketRegime,
-        source: str, retrieved_at: datetime, spread: float | None,
-    ) -> SwingCandidate | None:
+    def _exclusion_reason(self, asset: UniverseAsset, symbol: str) -> str | None:
+        if symbol in self.blacklist:
+            return "blacklisted_symbol"
+        if asset.is_leveraged_or_inverse or symbol in LEVERAGED_OR_INVERSE_ETFS:
+            return "leveraged_or_inverse_etf"
+        if asset.asset_class != "us_equity" or asset.security_type not in {"common_stock", "etf"}:
+            return "unsupported_security_type"
+        if asset.is_tradable is not True or asset.broker_restricted:
+            return "broker_restricted_or_untradable"
+        if not asset.halt_status_known:
+            return "halt_status_unknown"
+        if asset.is_halted is not False:
+            return "trading_halt"
+        if asset.existing_holding:
+            return "existing_holding"
+        return None
+
+    def _candidate(
+        self,
+        asset: UniverseAsset,
+        frame: pd.DataFrame,
+        sector_raw: pd.DataFrame | list[dict] | None,
+        regime: MarketRegime,
+        source: str,
+        retrieved_at: datetime,
+        spread: float,
+        validation,
+        score,
+    ) -> SwingCandidate:
         close = frame["close"]
         price = float(close.iloc[-1])
-        ma20_raw, ma50_raw, ma200_raw = sma(close, 20), sma(close, 50), sma(close, 200)
-        atr_raw = atr(frame)
-        if ma20_raw is None or ma50_raw is None or ma200_raw is None or atr_raw is None:
-            return None
+        ma20_raw = ema(close, self.settings.strategy.short_ema_period)
+        ma50_raw = sma(close, self.settings.strategy.medium_ma_period)
+        ma200_raw = sma(close, self.settings.strategy.long_ma_period)
+        atr_raw = atr(frame, self.settings.strategy.atr_period)
+        assert ma20_raw is not None and ma50_raw is not None and ma200_raw is not None and atr_raw is not None
         ma20, ma50, ma200, atr14 = float(ma20_raw), float(ma50_raw), float(ma200_raw), float(atr_raw)
-        if min(ma20, ma50, ma200, atr14) <= 0:
-            return None
-        volume_ratio = float(frame["volume"].iloc[-1] / frame["volume"].tail(20).mean())
-        stock_rs = roc(close, 63) - roc(spy["close"], 63)
+        volume_ratio = float(frame["volume"].iloc[-1] / frame["volume"].tail(self.settings.strategy.short_ema_period).mean())
         sector_etf = SECTOR_ETFS.get(asset.sector)
-        sector_frame = None
-        if sector_etf and sector_etf in sector_bars:
-            try:
-                sector_frame = _frame(sector_bars[sector_etf])
-            except ValueError:
-                sector_frame = None
-        sector_rs = roc(sector_frame["close"], 63) - roc(spy["close"], 63) if sector_frame is not None else 0.0
-        stock_sector_rs = roc(close, 63) - roc(sector_frame["close"], 63) if sector_frame is not None else None
-        sector_trend = "UP" if sector_frame is not None and sector_frame["close"].iloc[-1] > sector_frame["close"].rolling(50).mean().iloc[-1] else "UNKNOWN"
-
-        recent_high = float(frame["high"].iloc[-26:-6].max())
-        recent_low = float(frame["low"].tail(10).min())
-        pullback_distance = min(abs(price - ma20), abs(price - ma50)) / atr14
-        ma50_rising = _slope(close, 50) > 0
-        ma200_rising = _slope(close, 200) > 0
-        bullish_confirmation = close.iloc[-1] > close.iloc[-2]
-        breakout_seen = bool((frame["close"].iloc[-6:-1] > recent_high).any())
-        successful_retest = price >= recent_high * 0.99 and price <= recent_high + atr14 and bullish_confirmation
-        five_day_range = float(frame["high"].tail(5).max() - frame["low"].tail(5).min())
-
-        if price > ma50 and ma50_rising and pullback_distance <= 1.25 and roc(close, 5) <= 0.03 and bullish_confirmation:
-            setup = SetupType.TREND_PULLBACK
-            setup_quality = 0.8 + (0.2 if volume_ratio <= 1.0 else 0)
-            support = max(recent_low, ma50 - 0.25 * atr14)
-        elif breakout_seen and successful_retest and price > ma50:
-            setup = SetupType.BREAKOUT_RETEST
-            setup_quality = 0.85 + (0.15 if volume_ratio >= 1.1 else 0)
-            support = min(recent_high - 0.25 * atr14, float(frame["low"].tail(3).min()))
-        elif price > ma20 > ma50 and stock_rs > 0 and sector_rs >= 0 and five_day_range <= 3 * atr14 and bullish_confirmation:
-            setup = SetupType.RELATIVE_STRENGTH_CONTINUATION
-            setup_quality = 0.8 + (0.2 if stock_rs > 0.05 else 0)
-            support = min(ma20, float(frame["low"].tail(5).min()))
-        else:
-            return None
-
-        support = min(support, price - 0.25 * atr14)
-        resistance = max(float(frame["high"].tail(63).max()), price + 2 * (price - support))
-        rr = (resistance - price) / (price - support) if price > support else 0
-        regime_fraction = {
-            MarketRegime.STRONG_BULL: 1.0, MarketRegime.BULL: 0.85, MarketRegime.NEUTRAL: 0.55,
-            MarketRegime.CHOPPY: 0.30, MarketRegime.BEAR: 0.0, MarketRegime.HIGH_VOLATILITY_RISK_OFF: 0.0,
-        }[regime]
-        trend_fraction = np.mean([
-            price > ma20, price > ma50, price > ma200, ma50_rising, ma200_rising,
-        ])
-        rs_fraction = float(np.clip(0.5 + stock_rs * 5 + sector_rs * 2, 0, 1))
-        volume_fraction = float(np.clip(1 - abs(volume_ratio - 1.25) / 1.25, 0, 1))
-        entry_fraction = float(np.clip(1 - max(pullback_distance - 0.25, 0) / 2, 0, 1))
-        rr_fraction = float(np.clip(rr / 2, 0, 1))
-        adv = float(frame["volume"].tail(20).mean())
-        liquidity_fraction = float(np.clip((adv - 1_000_000) / 4_000_000, 0, 1))
-        if spread is not None:
-            liquidity_fraction = min(liquidity_fraction, float(np.clip(1 - spread / self.settings.maximum_spread_pct, 0, 1)))
-        event_fraction = 1.0 if asset.is_etf or (asset.earnings_trading_days is not None and asset.earnings_trading_days > 5) else 0.0
-        fractions = {
-            "market_regime": regime_fraction,
-            "trend_quality": trend_fraction,
-            "setup_quality": setup_quality,
-            "relative_strength": rs_fraction,
-            "volume_confirmation": volume_fraction,
-            "entry_quality": entry_fraction,
-            "risk_reward": rr_fraction,
-            "liquidity": liquidity_fraction,
-            "event_risk": event_fraction,
-        }
-        components = {name: round(self.WEIGHTS[name] * float(fraction), 4) for name, fraction in fractions.items()}
-        score = round(sum(components.values()), 4)
+        sector_frame = _frame(sector_raw) if sector_raw is not None else None
+        sector_rs = float(validation.features.get("sector_rs_spy") or 0)
+        stock_rs = float(validation.features.get("stock_rs_spy") or 0)
+        stock_sector_rs = validation.features.get("stock_rs_sector")
+        sector_trend = "UP" if sector_frame is not None and sector_frame["close"].iloc[-1] > sector_frame["close"].rolling(self.settings.strategy.medium_ma_period).mean().iloc[-1] else "UNKNOWN"
+        adv = float(frame["volume"].tail(self.settings.strategy.short_ema_period).mean())
         market_timestamp = None
         if isinstance(frame.index, pd.DatetimeIndex) and len(frame.index):
             stamp = frame.index[-1]
@@ -302,9 +446,12 @@ class DeterministicSwingScanner:
         market_timestamp = market_timestamp or retrieved_at
         return SwingCandidate(
             ticker=asset.symbol,
-            setup_type=setup,
-            score=score,
-            score_components=components,
+            setup_type=validation.setup_type,
+            score=score.total,
+            score_components=dict(score.components),
+            score_route=score.route,
+            validator_features=dict(validation.features),
+            validator_failures=list(validation.failed_conditions),
             market_regime=regime,
             sector=asset.sector,
             sector_etf=sector_etf,
@@ -322,11 +469,11 @@ class DeterministicSwingScanner:
             ma50=ma50,
             ma200=ma200,
             volume_ratio=volume_ratio,
-            support=support,
-            resistance=resistance,
+            support=float(validation.provisional_stop),
+            resistance=float(validation.target),
             earnings_trading_days=asset.earnings_trading_days,
             is_etf=asset.is_etf,
             is_leveraged_or_inverse=asset.is_leveraged_or_inverse,
-            is_halted=asset.is_halted,
+            is_halted=bool(asset.is_halted),
             data=TimestampedData(source=source, retrieved_at=retrieved_at, market_timestamp=market_timestamp),
         )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Mapping
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,6 +39,112 @@ class ModelSettings:
 
 
 @dataclass(frozen=True)
+class EntryScoreWeights:
+    """Researchable score weights; startup requires an exact 100-point scale."""
+
+    setup_quality: float = 30.0
+    relative_strength: float = 20.0
+    trend_quality: float = 15.0
+    volume_confirmation: float = 10.0
+    market_regime: float = 10.0
+    sector_strength: float = 5.0
+    risk_reward: float = 10.0
+
+    def as_dict(self) -> dict[str, float]:
+        return {
+            "setup_quality": self.setup_quality,
+            "relative_strength": self.relative_strength,
+            "trend_quality": self.trend_quality,
+            "volume_confirmation": self.volume_confirmation,
+            "market_regime": self.market_regime,
+            "sector_strength": self.sector_strength,
+            "risk_reward": self.risk_reward,
+        }
+
+    def __post_init__(self) -> None:
+        values = self.as_dict()
+        if any(value < 0 or value > 50 for value in values.values()):
+            raise ValueError("Entry score weights must each remain between 0 and 50")
+        if abs(sum(values.values()) - 100.0) > 1e-9:
+            raise ValueError("Entry score weights must total exactly 100")
+
+
+@dataclass(frozen=True)
+class StrategySettings:
+    """Bounded deterministic setup parameters (research defaults, not truths)."""
+
+    short_ema_period: int = 20
+    atr_period: int = 14
+    medium_ma_period: int = 50
+    long_ma_period: int = 150
+    trend_slope_lookback: int = 10
+    minimum_trend_slope: float = 0.0
+    relative_strength_lookback: int = 63
+    minimum_spy_relative_strength: float = 0.0
+    strong_spy_relative_strength: float = 0.03
+    minimum_sector_relative_strength: float = 0.0
+    pullback_max_atr_distance: float = 1.25
+    structural_break_atr: float = 0.5
+    minimum_atr_pct: float = 0.005
+    maximum_atr_pct: float = 0.08
+    consolidation_sessions: int = 20
+    consolidation_max_range_pct: float = 0.12
+    breakout_buffer_pct: float = 0.003
+    breakout_volume_ratio: float = 1.20
+    retest_hold_tolerance_pct: float = 0.01
+    retest_collapse_tolerance_pct: float = 0.03
+    maximum_breakout_extension_atr: float = 1.25
+    rs_consolidation_sessions: int = 10
+    rs_consolidation_max_atr: float = 4.0
+    contraction_volume_ratio: float = 0.90
+    confirmation_volume_ratio: float = 1.10
+    trend_target_atr_extension: float = 3.0
+    measured_move_multiple: float = 2.5
+    maximum_bar_age_calendar_days: int = 7
+
+    def __post_init__(self) -> None:
+        bounded: Mapping[str, tuple[float, float, float]] = {
+            "short_ema_period": (self.short_ema_period, 10, 30),
+            "atr_period": (self.atr_period, 10, 30),
+            "medium_ma_period": (self.medium_ma_period, 40, 75),
+            "long_ma_period": (self.long_ma_period, 100, 200),
+            "trend_slope_lookback": (self.trend_slope_lookback, 5, 30),
+            "minimum_trend_slope": (self.minimum_trend_slope, 0, 0.05),
+            "relative_strength_lookback": (self.relative_strength_lookback, 40, 126),
+            "minimum_spy_relative_strength": (self.minimum_spy_relative_strength, 0, 0.20),
+            "strong_spy_relative_strength": (self.strong_spy_relative_strength, 0.01, 0.30),
+            "minimum_sector_relative_strength": (self.minimum_sector_relative_strength, 0, 0.20),
+            "pullback_max_atr_distance": (self.pullback_max_atr_distance, 0.25, 2.0),
+            "structural_break_atr": (self.structural_break_atr, 0, 2.0),
+            "minimum_atr_pct": (self.minimum_atr_pct, 0, 0.03),
+            "maximum_atr_pct": (self.maximum_atr_pct, 0.03, 0.15),
+            "consolidation_sessions": (self.consolidation_sessions, 10, 40),
+            "consolidation_max_range_pct": (self.consolidation_max_range_pct, 0.03, 0.25),
+            "breakout_buffer_pct": (self.breakout_buffer_pct, 0, 0.03),
+            "breakout_volume_ratio": (self.breakout_volume_ratio, 1.0, 3.0),
+            "retest_hold_tolerance_pct": (self.retest_hold_tolerance_pct, 0, 0.05),
+            "retest_collapse_tolerance_pct": (self.retest_collapse_tolerance_pct, 0, 0.10),
+            "maximum_breakout_extension_atr": (self.maximum_breakout_extension_atr, 0.25, 3.0),
+            "rs_consolidation_sessions": (self.rs_consolidation_sessions, 5, 30),
+            "rs_consolidation_max_atr": (self.rs_consolidation_max_atr, 1.5, 8.0),
+            "contraction_volume_ratio": (self.contraction_volume_ratio, 0.5, 1.1),
+            "confirmation_volume_ratio": (self.confirmation_volume_ratio, 0.8, 3.0),
+            "trend_target_atr_extension": (self.trend_target_atr_extension, 0.5, 5.0),
+            "measured_move_multiple": (self.measured_move_multiple, 0.5, 3.0),
+            "maximum_bar_age_calendar_days": (self.maximum_bar_age_calendar_days, 1, 10),
+        }
+        for name, (value, lower, upper) in bounded.items():
+            if not lower <= value <= upper:
+                raise ValueError(f"{name} must remain between {lower} and {upper}")
+        if not self.short_ema_period < self.medium_ma_period < self.long_ma_period:
+            raise ValueError("Strategy moving-average periods must be strictly ordered")
+        if self.minimum_atr_pct >= self.maximum_atr_pct:
+            raise ValueError("Strategy ATR bounds must be strictly ordered")
+        if self.strong_spy_relative_strength < self.minimum_spy_relative_strength:
+            raise ValueError("Strong relative strength cannot be below the minimum")
+
+
+@dataclass(frozen=True)
 class SwingSettings:
     trading_style: str = "swing"
     execution_mode: str = "paper"
@@ -46,6 +153,7 @@ class SwingSettings:
     strategy_version: str = "SWING_V1.0"
     database_path: Path = ROOT / "data" / "adaptive_swing.db"
     do_not_trade_path: Path = ROOT / "config" / "do_not_trade.yaml"
+    universe_path: Path = ROOT / "config" / "universe" / "us_liquid_2026-08-11.csv"
 
     normal_risk_pct: float = 0.005
     a_plus_risk_pct: float = 0.0075
@@ -67,7 +175,16 @@ class SwingSettings:
     a_plus_score_threshold: float = 90.0
     minimum_price: float = 5.0
     minimum_average_volume: int = 1_000_000
+    minimum_average_dollar_volume: float = 20_000_000
+    minimum_history_sessions: int = 160
     maximum_spread_pct: float = 0.005
+    borderline_score_threshold: float = 70.0
+    neutral_score_threshold_addition: float = 5.0
+    choppy_score_threshold_addition: float = 10.0
+    hostile_score_threshold_addition: float = 20.0
+    neutral_risk_multiplier: float = 0.75
+    choppy_risk_multiplier: float = 0.50
+    hostile_risk_multiplier: float = 0.25
     earnings_exclusion_trading_days: int = 5
     quote_freshness_seconds: int = 300
     cooldown_trading_days: int = 10
@@ -75,6 +192,8 @@ class SwingSettings:
     maximum_scanner_candidates: int = 20
     maximum_pm_candidates: int = 5
     models: ModelSettings = field(default_factory=ModelSettings)
+    strategy: StrategySettings = field(default_factory=StrategySettings)
+    score_weights: EntryScoreWeights = field(default_factory=EntryScoreWeights)
 
     def __post_init__(self) -> None:
         if self.trading_style != "swing":
@@ -107,12 +226,18 @@ class SwingSettings:
             self.buy_score_threshold <= self.preferred_score_threshold <= self.a_plus_score_threshold <= 100
         ):
             raise ValueError("Score thresholds must be ordered and BUY_SCORE_THRESHOLD cannot be below 80")
+        if not (0 <= self.borderline_score_threshold < self.buy_score_threshold):
+            raise ValueError("BORDERLINE_SCORE_THRESHOLD must be below BUY_SCORE_THRESHOLD")
         if self.minimum_rr < 2.0 or self.exceptional_minimum_rr < 1.5:
             raise ValueError("Reward/risk minimums may be stricter, but not weaker than 2.0/1.5")
         if self.exceptional_minimum_rr > self.minimum_rr:
             raise ValueError("Exceptional reward/risk cannot exceed the normal minimum")
-        if self.minimum_price < 5 or self.minimum_average_volume < 1_000_000:
+        if self.minimum_price < 5 or self.minimum_average_volume < 1_000_000 or not 20_000_000 <= self.minimum_average_dollar_volume <= 5_000_000_000:
             raise ValueError("Liquidity filters may be stricter, but not weaker than the production floors")
+        if not 120 <= self.minimum_history_sessions <= 200:
+            raise ValueError("MINIMUM_HISTORY_SESSIONS must remain between 120 and 200")
+        if self.minimum_history_sessions < self.strategy.long_ma_period:
+            raise ValueError("MINIMUM_HISTORY_SESSIONS must cover the configured long moving average")
         if not (0 < self.maximum_spread_pct <= 0.005):
             raise ValueError("MAXIMUM_SPREAD_PCT must be positive and cannot exceed 0.50%")
         if not (1 <= self.quote_freshness_seconds <= 300):
@@ -123,6 +248,12 @@ class SwingSettings:
             raise ValueError("MINIMUM_STATISTICAL_SAMPLE may not be below 30")
         if not (1 <= self.maximum_scanner_candidates <= 20) or not (1 <= self.maximum_pm_candidates <= 5):
             raise ValueError("Candidate limits must be positive and may not exceed 20/5")
+        additions = (self.neutral_score_threshold_addition, self.choppy_score_threshold_addition, self.hostile_score_threshold_addition)
+        if not (0 <= additions[0] <= additions[1] <= additions[2] <= 30):
+            raise ValueError("Regime score additions must be nonnegative, ordered, and no greater than 30")
+        multipliers = (self.neutral_risk_multiplier, self.choppy_risk_multiplier, self.hostile_risk_multiplier)
+        if not (0 < multipliers[2] <= multipliers[1] <= multipliers[0] <= 1):
+            raise ValueError("Regime risk multipliers may only reduce baseline risk")
         if self.execution_mode == "live" and self.trading_enabled and self.live_acknowledgement != "I_ACKNOWLEDGE_LIVE_RISK":
             raise ValueError("Live execution requires LIVE_TRADING_ACK=I_ACKNOWLEDGE_LIVE_RISK")
 
@@ -137,6 +268,7 @@ def load_settings() -> SwingSettings:
         strategy_version=os.getenv("STRATEGY_VERSION", "SWING_V1.0"),
         database_path=Path(os.getenv("SWING_DATABASE_PATH", str(ROOT / "data" / "adaptive_swing.db"))),
         do_not_trade_path=Path(os.getenv("DO_NOT_TRADE_PATH", str(ROOT / "config" / "do_not_trade.yaml"))),
+        universe_path=Path(os.getenv("SWING_UNIVERSE_PATH", str(ROOT / "config" / "universe" / "us_liquid_2026-08-11.csv"))),
         normal_risk_pct=_float("NORMAL_RISK_PCT", 0.005),
         a_plus_risk_pct=_float("A_PLUS_RISK_PCT", 0.0075),
         absolute_max_risk_pct=_float("ABSOLUTE_MAX_RISK_PCT", 0.01),
@@ -152,31 +284,95 @@ def load_settings() -> SwingSettings:
         a_plus_score_threshold=_float("A_PLUS_SCORE_THRESHOLD", 90.0),
         minimum_price=_float("MINIMUM_PRICE", 5.0),
         minimum_average_volume=_int("MINIMUM_AVERAGE_VOLUME", 1_000_000),
+        minimum_average_dollar_volume=_float("MINIMUM_AVERAGE_DOLLAR_VOLUME", 20_000_000),
+        minimum_history_sessions=_int("MINIMUM_HISTORY_SESSIONS", 160),
         maximum_spread_pct=_float("MAXIMUM_SPREAD_PCT", 0.005),
+        borderline_score_threshold=_float("BORDERLINE_SCORE_THRESHOLD", 70.0),
+        neutral_score_threshold_addition=_float("NEUTRAL_SCORE_THRESHOLD_ADDITION", 5.0),
+        choppy_score_threshold_addition=_float("CHOPPY_SCORE_THRESHOLD_ADDITION", 10.0),
+        hostile_score_threshold_addition=_float("HOSTILE_SCORE_THRESHOLD_ADDITION", 20.0),
+        neutral_risk_multiplier=_float("NEUTRAL_RISK_MULTIPLIER", 0.75),
+        choppy_risk_multiplier=_float("CHOPPY_RISK_MULTIPLIER", 0.50),
+        hostile_risk_multiplier=_float("HOSTILE_RISK_MULTIPLIER", 0.25),
         earnings_exclusion_trading_days=_int("EARNINGS_EXCLUSION_TRADING_DAYS", 5),
         quote_freshness_seconds=_int("QUOTE_FRESHNESS_SECONDS", 300),
         cooldown_trading_days=_int("COOLDOWN_TRADING_DAYS", 10),
         minimum_statistical_sample=_int("MINIMUM_STATISTICAL_SAMPLE", 30),
         maximum_scanner_candidates=_int("MAXIMUM_SCANNER_CANDIDATES", 20),
         maximum_pm_candidates=_int("MAXIMUM_PM_CANDIDATES", 5),
+        strategy=StrategySettings(
+            short_ema_period=_int("STRATEGY_SHORT_EMA_PERIOD", 20),
+            atr_period=_int("STRATEGY_ATR_PERIOD", 14),
+            medium_ma_period=_int("STRATEGY_MEDIUM_MA_PERIOD", 50),
+            long_ma_period=_int("STRATEGY_LONG_MA_PERIOD", 150),
+            trend_slope_lookback=_int("STRATEGY_TREND_SLOPE_LOOKBACK", 10),
+            minimum_trend_slope=_float("STRATEGY_MINIMUM_TREND_SLOPE", 0.0),
+            relative_strength_lookback=_int("STRATEGY_RS_LOOKBACK", 63),
+            minimum_spy_relative_strength=_float("STRATEGY_MINIMUM_SPY_RS", 0.0),
+            strong_spy_relative_strength=_float("STRATEGY_STRONG_SPY_RS", 0.03),
+            minimum_sector_relative_strength=_float("STRATEGY_MINIMUM_SECTOR_RS", 0.0),
+            pullback_max_atr_distance=_float("STRATEGY_PULLBACK_MAX_ATR_DISTANCE", 1.25),
+            structural_break_atr=_float("STRATEGY_STRUCTURAL_BREAK_ATR", 0.5),
+            minimum_atr_pct=_float("STRATEGY_MINIMUM_ATR_PCT", 0.005),
+            maximum_atr_pct=_float("STRATEGY_MAXIMUM_ATR_PCT", 0.08),
+            consolidation_sessions=_int("STRATEGY_CONSOLIDATION_SESSIONS", 20),
+            consolidation_max_range_pct=_float("STRATEGY_CONSOLIDATION_MAX_RANGE_PCT", 0.12),
+            breakout_buffer_pct=_float("STRATEGY_BREAKOUT_BUFFER_PCT", 0.003),
+            breakout_volume_ratio=_float("STRATEGY_BREAKOUT_VOLUME_RATIO", 1.20),
+            retest_hold_tolerance_pct=_float("STRATEGY_RETEST_HOLD_TOLERANCE_PCT", 0.01),
+            retest_collapse_tolerance_pct=_float("STRATEGY_RETEST_COLLAPSE_TOLERANCE_PCT", 0.03),
+            maximum_breakout_extension_atr=_float("STRATEGY_MAXIMUM_BREAKOUT_EXTENSION_ATR", 1.25),
+            rs_consolidation_sessions=_int("STRATEGY_RS_CONSOLIDATION_SESSIONS", 10),
+            rs_consolidation_max_atr=_float("STRATEGY_RS_CONSOLIDATION_MAX_ATR", 4.0),
+            contraction_volume_ratio=_float("STRATEGY_CONTRACTION_VOLUME_RATIO", 0.90),
+            confirmation_volume_ratio=_float("STRATEGY_CONFIRMATION_VOLUME_RATIO", 1.10),
+            trend_target_atr_extension=_float("STRATEGY_TREND_TARGET_ATR_EXTENSION", 3.0),
+            measured_move_multiple=_float("STRATEGY_MEASURED_MOVE_MULTIPLE", 2.5),
+            maximum_bar_age_calendar_days=_int("STRATEGY_MAXIMUM_BAR_AGE_DAYS", 7),
+        ),
+        score_weights=EntryScoreWeights(
+            setup_quality=_float("SCORE_WEIGHT_SETUP_QUALITY", 30.0),
+            relative_strength=_float("SCORE_WEIGHT_RELATIVE_STRENGTH", 20.0),
+            trend_quality=_float("SCORE_WEIGHT_TREND_QUALITY", 15.0),
+            volume_confirmation=_float("SCORE_WEIGHT_VOLUME_CONFIRMATION", 10.0),
+            market_regime=_float("SCORE_WEIGHT_MARKET_REGIME", 10.0),
+            sector_strength=_float("SCORE_WEIGHT_SECTOR_STRENGTH", 5.0),
+            risk_reward=_float("SCORE_WEIGHT_RISK_REWARD", 10.0),
+        ),
     )
 
 
 def load_symbol_blacklist(path: Path) -> set[str]:
     """Read the deliberately simple YAML list without adding a YAML dependency."""
-    if not path.exists():
-        return set()
+    if not path.is_file():
+        raise RuntimeError(f"Required blacklist is not loadable: {path}")
     symbols: set[str] = set()
     active_key = ""
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    try:
+        rows = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise RuntimeError(f"Required blacklist is not loadable: {path}") from exc
+    saw_symbols_key = False
+    for raw in rows:
         line = raw.split("#", 1)[0].rstrip()
         if not line:
             continue
+        if not line.startswith((" ", "-")) and ":" in line:
+            key, inline_value = (part.strip() for part in line.split(":", 1))
+            if key in {"symbols", "substantially_identical"} and inline_value:
+                if inline_value != "[]":
+                    raise RuntimeError(f"Required blacklist has unsupported inline syntax: {path}")
+                active_key = key
+                saw_symbols_key = saw_symbols_key or key == "symbols"
+                continue
         if not line.startswith((" ", "-")) and line.endswith(":"):
             active_key = line[:-1].strip()
+            saw_symbols_key = saw_symbols_key or active_key == "symbols"
             continue
         if active_key in {"symbols", "substantially_identical"} and line.lstrip().startswith("-"):
             symbol = line.lstrip()[1:].strip().strip("'\"").upper()
             if symbol:
                 symbols.add(symbol)
+    if not saw_symbols_key:
+        raise RuntimeError(f"Required blacklist is malformed (missing symbols key): {path}")
     return symbols

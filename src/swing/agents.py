@@ -136,7 +136,13 @@ class AgentPipeline:
 
     def analyze(self, candidates: list[SwingCandidate]) -> list[TradeProposal]:
         """Return schema-valid BUY proposals; no model or invalid output means no trade."""
-        screened = [candidate for candidate in candidates if candidate.score >= self.settings.buy_score_threshold]
+        # A model never gets to review a hard-failed or watchlist-only setup.
+        screened = [
+            candidate
+            for candidate in candidates
+            if candidate.score_route in {"strong", "very_strong"} and not candidate.validator_failures
+        ]
+        screened.sort(key=lambda candidate: (candidate.score_route != "very_strong", -candidate.score, candidate.ticker))
         finalists: list[tuple[SwingCandidate, TechnicalSwingAnalysis, FundamentalEventAnalysis, BullAnalysis, BearAnalysis]] = []
         for candidate in screened[: self.settings.maximum_scanner_candidates]:
             base = {"candidate": candidate.model_dump(mode="json"), "instruction": "Use only supplied data; identify unknowns explicitly."}

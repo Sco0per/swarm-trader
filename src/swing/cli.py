@@ -135,27 +135,28 @@ def main() -> int:
         )
         print(order.model_dump_json(indent=2))
     elif args.command == "scan":
-        inputs = load_scan_inputs(database=database)
+        inputs = load_scan_inputs(database=database, universe_path=settings.universe_path)
         scanner = DeterministicSwingScanner(settings)
         candidates = scanner.scan(
             inputs.assets, inputs.bars_by_symbol, spy_bars=inputs.spy_bars, qqq_bars=inputs.qqq_bars,
-            sector_bars=inputs.sector_bars, source="yfinance",
+            sector_bars=inputs.sector_bars, source="alpaca",
         )
         for candidate in candidates:
             database.record_candidate(candidate)
         print(json.dumps({
             "candidates_found": len(candidates),
+            "funnel": scanner.last_report.as_dict() if hasattr(scanner, "last_report") else None,
             "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
         }, indent=2, default=str))
     elif args.command == "run":
         if settings.execution_mode != "paper":
             raise ValueError("run currently supports EXECUTION_MODE=paper only")
         broker = AlpacaPaperProvider(os.getenv("ALPACA_API_KEY", ""), os.getenv("ALPACA_API_SECRET", ""))
-        inputs = load_scan_inputs(database=database)
+        inputs = load_scan_inputs(database=database, universe_path=settings.universe_path)
         scanner = DeterministicSwingScanner(settings)
         candidates = scanner.scan(
             inputs.assets, inputs.bars_by_symbol, spy_bars=inputs.spy_bars, qqq_bars=inputs.qqq_bars,
-            sector_bars=inputs.sector_bars, source="yfinance",
+            sector_bars=inputs.sector_bars, source="alpaca",
         )
         for candidate in candidates:
             database.record_candidate(candidate)
@@ -180,6 +181,7 @@ def main() -> int:
             "llm_backend_configured": backend is not None,
             "candidates_found": len(candidates),
             "proposals_generated": len(proposals),
+            "funnel": scanner.last_report.as_dict() if hasattr(scanner, "last_report") else None,
             "decisions": decisions,
         }, indent=2, default=str))
     elif args.command == "review-observations":

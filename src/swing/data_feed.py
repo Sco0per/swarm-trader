@@ -28,10 +28,10 @@ sandbox later the same day can skip the network call entirely instead of
 re-paying it every run -- the local disk cache below only helps within a
 single process.
 
-Known limitation (documented, not silently papered over): there is no free,
-reliable halt-status feed, so ``UniverseAsset.is_halted`` always defaults to
-``False`` here. This matches the gap already called out in
-``docs/REMEDIATION_STATUS.md``.
+Known limitation: Alpaca asset metadata is not a reliable real-time halt feed.
+Production assets therefore carry ``halt_status_known=False`` and the scanner
+rejects them with ``halt_status_unknown``.  This is intentionally fail-closed
+until a reliable halt source is integrated.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ import pandas as pd
 import requests
 
 from .market import SECTOR_ETFS, UniverseAsset
-from .universe import UNIVERSE, UniverseEntry
+from .universe import UNIVERSE, UniverseEntry, load_universe
 
 if TYPE_CHECKING:
     from .database import SwingDatabase
@@ -61,6 +61,7 @@ EARNINGS_CACHE_TTL_SECONDS = 24 * 3600
 REQUIRED_COLUMNS = ("open", "high", "low", "close", "volume")
 
 ALPACA_DATA_BASE = "https://data.alpaca.markets/v2"
+ALPACA_TRADING_BASE = "https://paper-api.alpaca.markets/v2"
 ALPACA_BATCH_SIZE = 50
 
 
@@ -84,6 +85,38 @@ def _alpaca_get(path: str, params: dict) -> dict:
     if not response.ok:
         raise RuntimeError(f"Alpaca data API {response.status_code} for {path}: {response.text[:500]}")
     return response.json()
+
+
+def _alpaca_trading_get(path: str, params: dict | None = None):
+    """Read-only, mockable seam over Alpaca paper account metadata."""
+    response = requests.get(
+        f"{ALPACA_TRADING_BASE}{path}", headers=_alpaca_headers(), params=params or {}, timeout=30
+    )
+    if not response.ok:
+        raise RuntimeError(f"Alpaca trading API {response.status_code} for {path}: {response.text[:500]}")
+    return response.json()
+
+
+def fetch_broker_scan_metadata(symbols: list[str]) -> tuple[dict[str, dict], set[str], dict[str, tuple[float, float, datetime]]]:
+    """Fetch read-only broker asset, holding, and latest-spread metadata."""
+    raw_assets = _alpaca_trading_get("/assets", {"status": "active", "asset_class": "us_equity"})
+    wanted = set(symbols)
+    assets = {str(row.get("symbol", "")).upper(): row for row in raw_assets if str(row.get("symbol", "")).upper() in wanted}
+    raw_positions = _alpaca_trading_get("/positions")
+    holdings = {str(row.get("symbol", "")).upper() for row in raw_positions}
+    quotes: dict[str, tuple[float, float, datetime]] = {}
+    for start in range(0, len(symbols), ALPACA_BATCH_SIZE):
+        batch = symbols[start : start + ALPACA_BATCH_SIZE]
+        payload = _alpaca_get("/stocks/quotes/latest", {"symbols": ",".join(batch), "feed": "iex"})
+        for symbol, quote in (payload.get("quotes") or {}).items():
+            try:
+                bid, ask = float(quote["bp"]), float(quote["ap"])
+                timestamp = datetime.fromisoformat(str(quote["t"]).replace("Z", "+00:00"))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if bid > 0 and ask > bid:
+                quotes[symbol.upper()] = (bid, ask, timestamp)
+    return assets, holdings, quotes
 
 
 def _cache_path(namespace: str, key: str) -> Path:
@@ -302,21 +335,41 @@ def fetch_earnings_trading_days(symbol: str, database: "SwingDatabase | None" = 
 
 
 def build_universe_assets(
-    entries: list[UniverseEntry] | None = None, database: "SwingDatabase | None" = None,
+    entries: list[UniverseEntry] | None = None,
+    database: "SwingDatabase | None" = None,
+    *,
+    broker_assets: dict[str, dict] | None = None,
+    existing_holdings: set[str] | None = None,
+    quotes: dict[str, tuple[float, float, datetime]] | None = None,
+    production_metadata: bool = False,
 ) -> list[UniverseAsset]:
     entries = entries if entries is not None else UNIVERSE
     stock_symbols = [entry.symbol for entry in entries if not entry.is_etf]
     earnings_by_symbol = fetch_earnings_trading_days_batch(stock_symbols, database=database) if stock_symbols else {}
     assets: list[UniverseAsset] = []
     for entry in entries:
+        metadata = (broker_assets or {}).get(entry.symbol, {})
+        quote = (quotes or {}).get(entry.symbol)
+        security_type = "etf" if entry.is_etf else "common_stock"
         assets.append(UniverseAsset(
             symbol=entry.symbol,
             sector=entry.sector,
             is_etf=entry.is_etf,
-            is_tradable=True,
+            asset_class=str(metadata.get("class", "unknown" if production_metadata else "us_equity")).lower(),
+            security_type=security_type,
+            is_tradable=bool(metadata.get("tradable")) if metadata else (None if production_metadata else True),
             is_halted=False,
+            # TODO: integrate a reliable real-time halt feed; asset "active" is not sufficient proof.
+            halt_status_known=not production_metadata,
+            broker_restricted=str(metadata.get("status", "unknown")).lower() != "active" if metadata else production_metadata,
+            existing_holding=entry.symbol in (existing_holdings or set()),
             is_leveraged_or_inverse=False,
             earnings_trading_days=None if entry.is_etf else earnings_by_symbol.get(entry.symbol),
+            # TODO: integrate deterministic FDA/M&A/index-rebalance/investor-day calendars.
+            prohibited_event_risk=None if production_metadata else False,
+            bid=quote[0] if quote else None,
+            ask=quote[1] if quote else None,
+            quote_timestamp=quote[2] if quote else None,
         ))
     return assets
 
@@ -331,10 +384,14 @@ class ScanInputs:
 
 
 def load_scan_inputs(
-    *, entries: list[UniverseEntry] | None = None, lookback_days: int = 320, database: "SwingDatabase | None" = None,
+    *,
+    entries: list[UniverseEntry] | None = None,
+    universe_path: Path | None = None,
+    lookback_days: int = 320,
+    database: "SwingDatabase | None" = None,
 ) -> ScanInputs:
     """Fetch everything DeterministicSwingScanner.scan() needs, in one call."""
-    entries = entries if entries is not None else UNIVERSE
+    entries = entries if entries is not None else load_universe(universe_path) if universe_path else UNIVERSE
     symbols = sorted({entry.symbol for entry in entries} | {"SPY", "QQQ"} | set(SECTOR_ETFS.values()))
     bars = fetch_bars(symbols, lookback_days=lookback_days)
     spy_bars = bars.get("SPY")
@@ -342,7 +399,18 @@ def load_scan_inputs(
     if spy_bars is None or qqq_bars is None:
         raise RuntimeError("SPY/QQQ bars are required for regime classification and were not available")
     sector_bars = {etf: bars[etf] for etf in SECTOR_ETFS.values() if etf in bars}
-    assets = build_universe_assets(entries, database=database)
+    try:
+        broker_assets, existing_holdings, quotes = fetch_broker_scan_metadata([entry.symbol for entry in entries])
+    except (OSError, RuntimeError, TypeError, ValueError):
+        broker_assets, existing_holdings, quotes = {}, set(), {}
+    assets = build_universe_assets(
+        entries,
+        database=database,
+        broker_assets=broker_assets,
+        existing_holdings=existing_holdings,
+        quotes=quotes,
+        production_metadata=True,
+    )
     bars_by_symbol = {entry.symbol: bars[entry.symbol] for entry in entries if entry.symbol in bars}
     return ScanInputs(
         assets=assets, bars_by_symbol=bars_by_symbol, spy_bars=spy_bars, qqq_bars=qqq_bars, sector_bars=sector_bars,

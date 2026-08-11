@@ -1,0 +1,440 @@
+symbol,sector,security_type,source_membership
+AAPL,Technology,common_stock,SP500_AND_NASDAQ100
+MSFT,Technology,common_stock,SP500_AND_NASDAQ100
+NVDA,Technology,common_stock,SP500_AND_NASDAQ100
+AVGO,Technology,common_stock,SP500_AND_NASDAQ100
+ORCL,Technology,common_stock,SP500_AND_NASDAQ100
+CRM,Technology,common_stock,SP500
+ADBE,Technology,common_stock,SP500_AND_NASDAQ100
+AMD,Technology,common_stock,SP500_AND_NASDAQ100
+CSCO,Technology,common_stock,SP500_AND_NASDAQ100
+ACN,Technology,common_stock,SP500
+IBM,Technology,common_stock,SP500
+TXN,Technology,common_stock,SP500_AND_NASDAQ100
+QCOM,Technology,common_stock,SP500_AND_NASDAQ100
+INTU,Technology,common_stock,SP500_AND_NASDAQ100
+NOW,Technology,common_stock,SP500
+AMAT,Technology,common_stock,SP500_AND_NASDAQ100
+MU,Technology,common_stock,SP500_AND_NASDAQ100
+PANW,Technology,common_stock,SP500_AND_NASDAQ100
+SNPS,Technology,common_stock,SP500_AND_NASDAQ100
+CDNS,Technology,common_stock,SP500_AND_NASDAQ100
+LRCX,Technology,common_stock,SP500_AND_NASDAQ100
+KLAC,Technology,common_stock,SP500_AND_NASDAQ100
+ANET,Technology,common_stock,SP500
+FTNT,Technology,common_stock,SP500_AND_NASDAQ100
+ADI,Technology,common_stock,SP500_AND_NASDAQ100
+APH,Technology,common_stock,SP500
+MSI,Technology,common_stock,SP500
+ROP,Technology,common_stock,SP500
+CRWD,Technology,common_stock,NASDAQ100
+DELL,Technology,common_stock,SP500
+GOOGL,Communication Services,common_stock,SP500_AND_NASDAQ100
+META,Communication Services,common_stock,SP500_AND_NASDAQ100
+NFLX,Communication Services,common_stock,SP500_AND_NASDAQ100
+DIS,Communication Services,common_stock,SP500
+CMCSA,Communication Services,common_stock,SP500_AND_NASDAQ100
+TMUS,Communication Services,common_stock,SP500_AND_NASDAQ100
+VZ,Communication Services,common_stock,SP500
+T,Communication Services,common_stock,SP500
+EA,Communication Services,common_stock,SP500
+TTWO,Communication Services,common_stock,SP500
+WBD,Communication Services,common_stock,SP500_AND_NASDAQ100
+OMC,Communication Services,common_stock,SP500
+LYV,Communication Services,common_stock,SP500
+PARA,Communication Services,common_stock,SP500
+AMZN,Consumer Discretionary,common_stock,SP500_AND_NASDAQ100
+TSLA,Consumer Discretionary,common_stock,SP500_AND_NASDAQ100
+HD,Consumer Discretionary,common_stock,SP500
+MCD,Consumer Discretionary,common_stock,SP500
+NKE,Consumer Discretionary,common_stock,SP500
+LOW,Consumer Discretionary,common_stock,SP500
+SBUX,Consumer Discretionary,common_stock,SP500_AND_NASDAQ100
+TJX,Consumer Discretionary,common_stock,SP500
+BKNG,Consumer Discretionary,common_stock,SP500_AND_NASDAQ100
+CMG,Consumer Discretionary,common_stock,SP500
+MAR,Consumer Discretionary,common_stock,SP500_AND_NASDAQ100
+GM,Consumer Discretionary,common_stock,SP500
+F,Consumer Discretionary,common_stock,SP500
+ORLY,Consumer Discretionary,common_stock,SP500_AND_NASDAQ100
+AZO,Consumer Discretionary,common_stock,SP500
+YUM,Consumer Discretionary,common_stock,SP500
+ROST,Consumer Discretionary,common_stock,SP500_AND_NASDAQ100
+DHI,Consumer Discretionary,common_stock,SP500
+LEN,Consumer Discretionary,common_stock,SP500
+HLT,Consumer Discretionary,common_stock,SP500
+PG,Consumer Staples,common_stock,SP500
+KO,Consumer Staples,common_stock,SP500
+PEP,Consumer Staples,common_stock,SP500_AND_NASDAQ100
+COST,Consumer Staples,common_stock,SP500_AND_NASDAQ100
+WMT,Consumer Staples,common_stock,SP500
+PM,Consumer Staples,common_stock,SP500
+MDLZ,Consumer Staples,common_stock,SP500_AND_NASDAQ100
+CL,Consumer Staples,common_stock,SP500
+MO,Consumer Staples,common_stock,SP500
+TGT,Consumer Staples,common_stock,SP500
+KMB,Consumer Staples,common_stock,SP500
+GIS,Consumer Staples,common_stock,SP500
+STZ,Consumer Staples,common_stock,SP500
+SYY,Consumer Staples,common_stock,SP500
+KDP,Consumer Staples,common_stock,SP500_AND_NASDAQ100
+JPM,Financials,common_stock,SP500
+V,Financials,common_stock,SP500
+MA,Financials,common_stock,SP500
+BAC,Financials,common_stock,SP500
+WFC,Financials,common_stock,SP500
+GS,Financials,common_stock,SP500
+MS,Financials,common_stock,SP500
+SPGI,Financials,common_stock,SP500
+AXP,Financials,common_stock,SP500
+SCHW,Financials,common_stock,SP500
+C,Financials,common_stock,SP500
+BLK,Financials,common_stock,SP500
+PGR,Financials,common_stock,SP500
+CB,Financials,common_stock,SP500
+MMC,Financials,common_stock,SP500
+ICE,Financials,common_stock,SP500
+USB,Financials,common_stock,SP500
+PNC,Financials,common_stock,SP500
+TFC,Financials,common_stock,SP500
+AON,Financials,common_stock,SP500
+UNH,Health Care,common_stock,SP500
+LLY,Health Care,common_stock,SP500
+JNJ,Health Care,common_stock,SP500
+ABBV,Health Care,common_stock,SP500
+MRK,Health Care,common_stock,SP500
+TMO,Health Care,common_stock,SP500
+ABT,Health Care,common_stock,SP500
+PFE,Health Care,common_stock,SP500
+DHR,Health Care,common_stock,SP500
+AMGN,Health Care,common_stock,SP500_AND_NASDAQ100
+ISRG,Health Care,common_stock,SP500_AND_NASDAQ100
+SYK,Health Care,common_stock,SP500
+BSX,Health Care,common_stock,SP500
+VRTX,Health Care,common_stock,SP500_AND_NASDAQ100
+REGN,Health Care,common_stock,SP500_AND_NASDAQ100
+GILD,Health Care,common_stock,SP500_AND_NASDAQ100
+ELV,Health Care,common_stock,SP500
+MDT,Health Care,common_stock,SP500
+CI,Health Care,common_stock,SP500
+ZTS,Health Care,common_stock,SP500
+GE,Industrials,common_stock,SP500
+CAT,Industrials,common_stock,SP500
+RTX,Industrials,common_stock,SP500
+HON,Industrials,common_stock,SP500_AND_NASDAQ100
+UNP,Industrials,common_stock,SP500
+BA,Industrials,common_stock,SP500
+DE,Industrials,common_stock,SP500
+LMT,Industrials,common_stock,SP500
+ADP,Industrials,common_stock,SP500_AND_NASDAQ100
+UPS,Industrials,common_stock,SP500
+ETN,Industrials,common_stock,SP500
+NOC,Industrials,common_stock,SP500
+GD,Industrials,common_stock,SP500
+ITW,Industrials,common_stock,SP500
+CSX,Industrials,common_stock,SP500
+EMR,Industrials,common_stock,SP500
+WM,Industrials,common_stock,SP500
+NSC,Industrials,common_stock,SP500
+PH,Industrials,common_stock,SP500
+FDX,Industrials,common_stock,SP500
+XOM,Energy,common_stock,SP500
+CVX,Energy,common_stock,SP500
+COP,Energy,common_stock,SP500
+WMB,Energy,common_stock,SP500
+EOG,Energy,common_stock,SP500
+SLB,Energy,common_stock,SP500
+MPC,Energy,common_stock,SP500
+PSX,Energy,common_stock,SP500
+OXY,Energy,common_stock,SP500
+VLO,Energy,common_stock,SP500
+LIN,Materials,common_stock,SP500
+SHW,Materials,common_stock,SP500
+APD,Materials,common_stock,SP500
+ECL,Materials,common_stock,SP500
+FCX,Materials,common_stock,SP500
+NEM,Materials,common_stock,SP500
+NUE,Materials,common_stock,SP500
+DOW,Materials,common_stock,SP500
+PPG,Materials,common_stock,SP500
+VMC,Materials,common_stock,SP500
+PLD,Real Estate,common_stock,SP500
+AMT,Real Estate,common_stock,SP500
+EQIX,Real Estate,common_stock,SP500
+WELL,Real Estate,common_stock,SP500
+SPG,Real Estate,common_stock,SP500
+PSA,Real Estate,common_stock,SP500
+O,Real Estate,common_stock,SP500
+DLR,Real Estate,common_stock,SP500
+CCI,Real Estate,common_stock,SP500
+VTR,Real Estate,common_stock,SP500
+NEE,Utilities,common_stock,SP500
+SO,Utilities,common_stock,SP500
+DUK,Utilities,common_stock,SP500
+AEP,Utilities,common_stock,SP500
+SRE,Utilities,common_stock,SP500
+D,Utilities,common_stock,SP500
+EXC,Utilities,common_stock,SP500
+XEL,Utilities,common_stock,SP500
+ED,Utilities,common_stock,SP500
+WEC,Utilities,common_stock,SP500
+AKAM,Technology,common_stock,SP500
+CDW,Technology,common_stock,SP500
+CTSH,Technology,common_stock,SP500
+EPAM,Technology,common_stock,SP500
+FFIV,Technology,common_stock,SP500
+FICO,Technology,common_stock,SP500
+GEN,Technology,common_stock,SP500
+GLW,Technology,common_stock,SP500
+HPE,Technology,common_stock,SP500
+HPQ,Technology,common_stock,SP500
+INTC,Technology,common_stock,SP500_AND_NASDAQ100
+KEYS,Technology,common_stock,SP500
+MCHP,Technology,common_stock,SP500_AND_NASDAQ100
+MPWR,Technology,common_stock,SP500_AND_NASDAQ100
+NTAP,Technology,common_stock,SP500
+NXPI,Technology,common_stock,SP500_AND_NASDAQ100
+ON,Technology,common_stock,SP500_AND_NASDAQ100
+PTC,Technology,common_stock,SP500
+STX,Technology,common_stock,SP500
+SWKS,Technology,common_stock,SP500
+TEL,Technology,common_stock,SP500
+TER,Technology,common_stock,SP500
+TRMB,Technology,common_stock,SP500
+TYL,Technology,common_stock,SP500
+WDC,Technology,common_stock,SP500
+ZBRA,Technology,common_stock,SP500
+CHTR,Communication Services,common_stock,SP500_AND_NASDAQ100
+FOXA,Communication Services,common_stock,SP500
+FOX,Communication Services,common_stock,SP500
+IPG,Communication Services,common_stock,SP500
+MTCH,Communication Services,common_stock,SP500
+NWSA,Communication Services,common_stock,SP500
+NWS,Communication Services,common_stock,SP500
+TKO,Communication Services,common_stock,SP500
+ABNB,Consumer Discretionary,common_stock,SP500_AND_NASDAQ100
+APTV,Consumer Discretionary,common_stock,SP500
+BBY,Consumer Discretionary,common_stock,SP500
+BWA,Consumer Discretionary,common_stock,SP500
+CCL,Consumer Discretionary,common_stock,SP500
+CZR,Consumer Discretionary,common_stock,SP500
+DECK,Consumer Discretionary,common_stock,SP500
+DPZ,Consumer Discretionary,common_stock,SP500
+DRI,Consumer Discretionary,common_stock,SP500
+EBAY,Consumer Discretionary,common_stock,SP500
+EXPE,Consumer Discretionary,common_stock,SP500
+GPC,Consumer Discretionary,common_stock,SP500
+HAS,Consumer Discretionary,common_stock,SP500
+KMX,Consumer Discretionary,common_stock,SP500
+LKQ,Consumer Discretionary,common_stock,SP500
+LULU,Consumer Discretionary,common_stock,NASDAQ100
+MGM,Consumer Discretionary,common_stock,SP500
+PHM,Consumer Discretionary,common_stock,SP500
+POOL,Consumer Discretionary,common_stock,SP500
+RL,Consumer Discretionary,common_stock,SP500
+TPR,Consumer Discretionary,common_stock,SP500
+TSCO,Consumer Discretionary,common_stock,SP500_AND_NASDAQ100
+ULTA,Consumer Discretionary,common_stock,SP500_AND_NASDAQ100
+WYNN,Consumer Discretionary,common_stock,SP500
+ADM,Consumer Staples,common_stock,SP500
+BF.B,Consumer Staples,common_stock,SP500
+BG,Consumer Staples,common_stock,SP500
+CAG,Consumer Staples,common_stock,SP500
+CHD,Consumer Staples,common_stock,SP500
+CLX,Consumer Staples,common_stock,SP500
+CPB,Consumer Staples,common_stock,SP500
+DG,Consumer Staples,common_stock,SP500
+DLTR,Consumer Staples,common_stock,SP500_AND_NASDAQ100
+EL,Consumer Staples,common_stock,SP500
+HRL,Consumer Staples,common_stock,SP500
+HSY,Consumer Staples,common_stock,SP500
+KR,Consumer Staples,common_stock,SP500
+LW,Consumer Staples,common_stock,SP500
+MKC,Consumer Staples,common_stock,SP500
+MNST,Consumer Staples,common_stock,SP500_AND_NASDAQ100
+SJM,Consumer Staples,common_stock,SP500
+TAP,Consumer Staples,common_stock,SP500
+TSN,Consumer Staples,common_stock,SP500
+ACGL,Financials,common_stock,SP500_AND_NASDAQ100
+AIG,Financials,common_stock,SP500
+AJG,Financials,common_stock,SP500
+ALL,Financials,common_stock,SP500
+AMP,Financials,common_stock,SP500
+BK,Financials,common_stock,SP500
+BRO,Financials,common_stock,SP500
+CINF,Financials,common_stock,SP500
+CME,Financials,common_stock,SP500_AND_NASDAQ100
+COF,Financials,common_stock,SP500
+FDS,Financials,common_stock,SP500
+FITB,Financials,common_stock,SP500
+GPN,Financials,common_stock,SP500
+HBAN,Financials,common_stock,SP500
+HIG,Financials,common_stock,SP500
+IVZ,Financials,common_stock,SP500
+KEY,Financials,common_stock,SP500
+L,Financials,common_stock,SP500
+MCO,Financials,common_stock,SP500
+MTB,Financials,common_stock,SP500
+NDAQ,Financials,common_stock,SP500
+NTRS,Financials,common_stock,SP500
+RF,Financials,common_stock,SP500
+RJF,Financials,common_stock,SP500
+SYF,Financials,common_stock,SP500
+TRV,Financials,common_stock,SP500
+WRB,Financials,common_stock,SP500
+WTW,Financials,common_stock,SP500
+ZION,Financials,common_stock,SP500
+A,Health Care,common_stock,SP500
+ALGN,Health Care,common_stock,SP500_AND_NASDAQ100
+BAX,Health Care,common_stock,SP500
+BDX,Health Care,common_stock,SP500
+BIIB,Health Care,common_stock,SP500_AND_NASDAQ100
+BMY,Health Care,common_stock,SP500
+CAH,Health Care,common_stock,SP500
+CNC,Health Care,common_stock,SP500
+COO,Health Care,common_stock,SP500
+COR,Health Care,common_stock,SP500
+CVS,Health Care,common_stock,SP500
+DGX,Health Care,common_stock,SP500
+DXCM,Health Care,common_stock,SP500_AND_NASDAQ100
+EW,Health Care,common_stock,SP500
+GEHC,Health Care,common_stock,SP500_AND_NASDAQ100
+HOLX,Health Care,common_stock,SP500_AND_NASDAQ100
+HSIC,Health Care,common_stock,SP500
+HUM,Health Care,common_stock,SP500
+IDXX,Health Care,common_stock,SP500_AND_NASDAQ100
+IQV,Health Care,common_stock,SP500
+LH,Health Care,common_stock,SP500
+MCK,Health Care,common_stock,SP500
+MOH,Health Care,common_stock,SP500
+PODD,Health Care,common_stock,SP500_AND_NASDAQ100
+RMD,Health Care,common_stock,SP500
+STE,Health Care,common_stock,SP500
+TECH,Health Care,common_stock,SP500
+UHS,Health Care,common_stock,SP500
+WAT,Health Care,common_stock,SP500
+WST,Health Care,common_stock,SP500
+ZBH,Health Care,common_stock,SP500
+ALLE,Industrials,common_stock,SP500
+AME,Industrials,common_stock,SP500
+AOS,Industrials,common_stock,SP500
+AXON,Industrials,common_stock,SP500_AND_NASDAQ100
+BLDR,Industrials,common_stock,SP500
+CARR,Industrials,common_stock,SP500
+CHRW,Industrials,common_stock,SP500
+CMI,Industrials,common_stock,SP500
+CPRT,Industrials,common_stock,SP500_AND_NASDAQ100
+CTAS,Industrials,common_stock,SP500_AND_NASDAQ100
+DAY,Industrials,common_stock,SP500
+DOV,Industrials,common_stock,SP500
+EFX,Industrials,common_stock,SP500
+FAST,Industrials,common_stock,SP500_AND_NASDAQ100
+FTV,Industrials,common_stock,SP500
+GEV,Industrials,common_stock,SP500
+GWW,Industrials,common_stock,SP500
+HII,Industrials,common_stock,SP500
+HUBB,Industrials,common_stock,SP500
+IEX,Industrials,common_stock,SP500
+IR,Industrials,common_stock,SP500
+JBHT,Industrials,common_stock,SP500_AND_NASDAQ100
+JCI,Industrials,common_stock,SP500
+LDOS,Industrials,common_stock,SP500
+MAS,Industrials,common_stock,SP500
+MMM,Industrials,common_stock,SP500
+OTIS,Industrials,common_stock,SP500
+PCAR,Industrials,common_stock,SP500_AND_NASDAQ100
+PWR,Industrials,common_stock,SP500
+ROK,Industrials,common_stock,SP500
+ROL,Industrials,common_stock,SP500
+SWK,Industrials,common_stock,SP500
+TDG,Industrials,common_stock,SP500
+TT,Industrials,common_stock,SP500
+TXT,Industrials,common_stock,SP500
+UAL,Industrials,common_stock,SP500
+URI,Industrials,common_stock,SP500
+VLTO,Industrials,common_stock,SP500
+WAB,Industrials,common_stock,SP500
+XYL,Industrials,common_stock,SP500
+APA,Energy,common_stock,SP500
+BKR,Energy,common_stock,SP500
+CTRA,Energy,common_stock,SP500
+DVN,Energy,common_stock,SP500
+EQT,Energy,common_stock,SP500
+FANG,Energy,common_stock,SP500_AND_NASDAQ100
+HAL,Energy,common_stock,SP500
+KMI,Energy,common_stock,SP500
+OKE,Energy,common_stock,SP500
+TRGP,Energy,common_stock,SP500
+ALB,Materials,common_stock,SP500
+AMCR,Materials,common_stock,SP500
+AVY,Materials,common_stock,SP500
+BALL,Materials,common_stock,SP500
+CF,Materials,common_stock,SP500
+CTVA,Materials,common_stock,SP500
+DD,Materials,common_stock,SP500
+EMN,Materials,common_stock,SP500
+FMC,Materials,common_stock,SP500
+IFF,Materials,common_stock,SP500
+IP,Materials,common_stock,SP500
+MLM,Materials,common_stock,SP500
+MOS,Materials,common_stock,SP500
+PKG,Materials,common_stock,SP500
+STLD,Materials,common_stock,SP500
+SW,Materials,common_stock,SP500
+ARE,Real Estate,common_stock,SP500
+AVB,Real Estate,common_stock,SP500
+BXP,Real Estate,common_stock,SP500
+CBRE,Real Estate,common_stock,SP500
+CPT,Real Estate,common_stock,SP500
+CSGP,Real Estate,common_stock,SP500_AND_NASDAQ100
+DOC,Real Estate,common_stock,SP500
+EQR,Real Estate,common_stock,SP500
+ESS,Real Estate,common_stock,SP500
+EXR,Real Estate,common_stock,SP500
+FRT,Real Estate,common_stock,SP500
+HST,Real Estate,common_stock,SP500
+INVH,Real Estate,common_stock,SP500
+IRM,Real Estate,common_stock,SP500
+KIM,Real Estate,common_stock,SP500
+MAA,Real Estate,common_stock,SP500
+REG,Real Estate,common_stock,SP500
+SBAC,Real Estate,common_stock,SP500
+UDR,Real Estate,common_stock,SP500
+VICI,Real Estate,common_stock,SP500
+WY,Real Estate,common_stock,SP500
+AES,Utilities,common_stock,SP500
+AEE,Utilities,common_stock,SP500
+ATO,Utilities,common_stock,SP500
+AWK,Utilities,common_stock,SP500
+CEG,Utilities,common_stock,SP500_AND_NASDAQ100
+CMS,Utilities,common_stock,SP500
+CNP,Utilities,common_stock,SP500
+EIX,Utilities,common_stock,SP500
+ETR,Utilities,common_stock,SP500
+EVRG,Utilities,common_stock,SP500
+FE,Utilities,common_stock,SP500
+LNT,Utilities,common_stock,SP500
+NI,Utilities,common_stock,SP500
+NRG,Utilities,common_stock,SP500
+PCG,Utilities,common_stock,SP500
+PEG,Utilities,common_stock,SP500
+PNW,Utilities,common_stock,SP500
+PPL,Utilities,common_stock,SP500
+VST,Utilities,common_stock,SP500
+SPY,Unknown,etf,BENCHMARK
+QQQ,Unknown,etf,BENCHMARK
+IWM,Unknown,etf,BENCHMARK
+DIA,Unknown,etf,BENCHMARK
+VTI,Unknown,etf,BENCHMARK
+VOO,Unknown,etf,BENCHMARK
+XLK,Unknown,etf,SECTOR_BENCHMARK
+XLC,Unknown,etf,SECTOR_BENCHMARK
+XLY,Unknown,etf,SECTOR_BENCHMARK
+XLP,Unknown,etf,SECTOR_BENCHMARK
+XLF,Unknown,etf,SECTOR_BENCHMARK
+XLV,Unknown,etf,SECTOR_BENCHMARK
+XLI,Unknown,etf,SECTOR_BENCHMARK
+XLE,Unknown,etf,SECTOR_BENCHMARK
+XLB,Unknown,etf,SECTOR_BENCHMARK
+XLRE,Unknown,etf,SECTOR_BENCHMARK
+XLU,Unknown,etf,SECTOR_BENCHMARK
