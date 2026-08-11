@@ -1,7 +1,9 @@
 # 05 — Journal, R-Multiple Analytics, Expectancy, and Postmortems
 
-Branch: `refactor/05-journal-analytics`  
-Date: 2026-08-11  
+Branch: `refactor/05-journal-analytics`
+
+Date: 2026-08-11
+
 Scope: measurement, journaling, analytics, decision versioning, postmortems,
 scheduling, notifications, and observability. No strategy admission rule, risk
 ceiling, position-sizing rule, broker order shape, or exit trigger was changed.
