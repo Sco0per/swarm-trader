@@ -74,7 +74,7 @@ Analytics report expectancy, winner/loser R, median R, profit factor, cumulative
 
 ## AutoResearch status
 
-`autoresearch/` is quarantined intraday-derived code, not swing-validated research. No production module imports it, and no automatic bridge can promote its output into configuration. Its self-modifying/evolution scripts are not part of the supported workflow. Human review is mandatory for any research promotion. `src/autoresearch_swing/` only records and evaluates hypotheses behind explicit sample and approval gates.
+`src/autoresearch_swing/` records and evaluates hypotheses behind explicit sample and approval gates. No automatic bridge can promote its output into configuration; human review is mandatory for any research promotion. (An earlier, unrelated intraday-derived research tool that once lived at top-level `autoresearch/` was never swing-validated and has been removed; see `docs/refactor/01_AUDIT_REPORT.md` for its history.)
 
 ## Scheduling
 
@@ -133,6 +133,6 @@ Until those checks pass, the honest readiness verdict is **not ready for a first
 
 Unknown is not safe. Missing data rejects. Models can veto but cannot authorize. Risk is based on the immutable original structure. Whole-share rounding never increases risk. Broker truth is reconciled before trust. Live execution remains human-only. A control that reduces trade count is evidence of the framework working, not a reason to remove it.
 
-Historical provenance: this repository began as an AI hedge-fund/personality-agent project and later carried multiple trading styles. Those components are retained only where needed for provenance or isolated research; the operational framework described above is the sole supported system.
+Historical provenance: this repository began as an AI hedge-fund/personality-agent project and later carried multiple trading styles. Those earlier components have been removed; the operational framework described above is the sole supported system. Provenance is recoverable via `docs/refactor/01_AUDIT_REPORT.md` and git history.
 
 This project is research software, not financial advice.
