@@ -135,6 +135,15 @@ class SwingExecutionService:
             if risk.rule == "drawdown_halt":
                 self._write_drawdown_review(portfolio, risk.reason)
             return ExecutionResult(status="REJECTED", intent_id=intent_id, risk=risk, message=risk.reason)
+        if risk.authoritative_stop is None:
+            rejected = self.risk_manager.reject(
+                "invalid_stop",
+                "Approved risk decision is missing its authoritative stop",
+                proposal,
+                intent_id,
+                candidate=candidate,
+            )
+            return ExecutionResult(status="REJECTED", intent_id=intent_id, risk=rejected, message=rejected.reason)
 
         intent = OrderIntent(
             intent_id=intent_id,
@@ -142,7 +151,7 @@ class SwingExecutionService:
             ticker=proposal.ticker,
             quantity=risk.quantity,
             limit_price=quote.last,
-            stop_price=risk.authoritative_stop or candidate.structural_invalidation,
+            stop_price=risk.authoritative_stop,
             target_price=candidate.resistance,
             strategy_version=proposal.strategy_version,
         )
@@ -393,6 +402,8 @@ class SwingExecutionService:
         status: str,
         broker_order_id: str | None,
     ) -> dict:
+        if risk.authoritative_stop is None:
+            raise ValueError("Cannot persist a trade without an authoritative stop")
         return {
             "trade_id": trade_id,
             "decision_id": proposal.decision_id,
