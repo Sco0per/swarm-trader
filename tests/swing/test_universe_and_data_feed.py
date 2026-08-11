@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from src.swing import data_feed
 from src.swing.market import SECTOR_ETFS
@@ -47,7 +46,11 @@ def _sample_alpaca_bars(symbol: str, count: int = 5) -> dict:
             symbol: [
                 {
                     "t": (base - pd.Timedelta(days=count - i)).isoformat(),
-                    "o": 1.0 + i, "h": 1.5 + i, "l": 0.5 + i, "c": 1.2 + i, "v": 1_000_000,
+                    "o": 1.0 + i,
+                    "h": 1.5 + i,
+                    "l": 0.5 + i,
+                    "c": 1.2 + i,
+                    "v": 1_000_000,
                 }
                 for i in range(count)
             ]

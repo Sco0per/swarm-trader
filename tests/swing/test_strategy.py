@@ -21,7 +21,6 @@ from src.swing.strategy import (
     validate_trend_pullback,
 )
 
-
 AS_OF = datetime(2026, 8, 11, tzinfo=timezone.utc)
 
 

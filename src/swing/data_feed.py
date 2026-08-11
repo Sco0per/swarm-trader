@@ -50,7 +50,7 @@ import pandas as pd
 import requests
 
 from .market import SECTOR_ETFS, UniverseAsset
-from .universe import UNIVERSE, UniverseEntry, load_universe
+from .universe import load_universe, UNIVERSE, UniverseEntry
 
 if TYPE_CHECKING:
     from .database import SwingDatabase
@@ -89,9 +89,7 @@ def _alpaca_get(path: str, params: dict) -> dict:
 
 def _alpaca_trading_get(path: str, params: dict | None = None):
     """Read-only, mockable seam over Alpaca paper account metadata."""
-    response = requests.get(
-        f"{ALPACA_TRADING_BASE}{path}", headers=_alpaca_headers(), params=params or {}, timeout=30
-    )
+    response = requests.get(f"{ALPACA_TRADING_BASE}{path}", headers=_alpaca_headers(), params=params or {}, timeout=30)
     if not response.ok:
         raise RuntimeError(f"Alpaca trading API {response.status_code} for {path}: {response.text[:500]}")
     return response.json()
@@ -149,11 +147,16 @@ def _cache_set(namespace: str, key: str, data) -> None:
 def _bars_to_records(frame: pd.DataFrame) -> list[dict]:
     records = []
     for index, row in frame.iterrows():
-        records.append({
-            "date": index.isoformat() if hasattr(index, "isoformat") else str(index),
-            "open": float(row["open"]), "high": float(row["high"]),
-            "low": float(row["low"]), "close": float(row["close"]), "volume": float(row["volume"]),
-        })
+        records.append(
+            {
+                "date": index.isoformat() if hasattr(index, "isoformat") else str(index),
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": float(row["volume"]),
+            }
+        )
     return records
 
 
@@ -170,8 +173,13 @@ def _fetch_alpaca_bars_batch(symbols: list[str], *, start: str, end: str) -> dic
     page_token: str | None = None
     while True:
         params = {
-            "symbols": ",".join(symbols), "timeframe": "1Day", "start": start, "end": end,
-            "limit": 10000, "adjustment": "all", "feed": "iex",
+            "symbols": ",".join(symbols),
+            "timeframe": "1Day",
+            "start": start,
+            "end": end,
+            "limit": 10000,
+            "adjustment": "all",
+            "feed": "iex",
         }
         if page_token:
             params["page_token"] = page_token
@@ -257,11 +265,7 @@ def _trading_days_from_calendar(calendar, today: date) -> int | None:
     index = getattr(calendar, "index", None)
     if calendar is None or index is None or len(index) == 0:
         return None
-    upcoming = [
-        (idx.date() if hasattr(idx, "date") else idx)
-        for idx in index
-        if (idx.date() if hasattr(idx, "date") else idx) >= today
-    ]
+    upcoming = [(idx.date() if hasattr(idx, "date") else idx) for idx in index if (idx.date() if hasattr(idx, "date") else idx) >= today]
     if not upcoming:
         return None
     return _approx_trading_days_until(min(upcoming), today)
@@ -301,10 +305,7 @@ def fetch_earnings_trading_days_batch(symbols: list[str], database: "SwingDataba
     if still_remaining:
         yf = _yf()
         outcomes: dict[str, dict] = {}
-        threads = [
-            threading.Thread(target=_fetch_earnings_calendar, args=(symbol, yf, outcomes), daemon=True)
-            for symbol in still_remaining
-        ]
+        threads = [threading.Thread(target=_fetch_earnings_calendar, args=(symbol, yf, outcomes), daemon=True) for symbol in still_remaining]
         for thread in threads:
             thread.start()
         deadline = time.monotonic() + EARNINGS_LOOKUP_TIMEOUT_SECONDS
@@ -351,26 +352,28 @@ def build_universe_assets(
         metadata = (broker_assets or {}).get(entry.symbol, {})
         quote = (quotes or {}).get(entry.symbol)
         security_type = "etf" if entry.is_etf else "common_stock"
-        assets.append(UniverseAsset(
-            symbol=entry.symbol,
-            sector=entry.sector,
-            is_etf=entry.is_etf,
-            asset_class=str(metadata.get("class", "unknown" if production_metadata else "us_equity")).lower(),
-            security_type=security_type,
-            is_tradable=bool(metadata.get("tradable")) if metadata else (None if production_metadata else True),
-            is_halted=False,
-            # TODO: integrate a reliable real-time halt feed; asset "active" is not sufficient proof.
-            halt_status_known=not production_metadata,
-            broker_restricted=str(metadata.get("status", "unknown")).lower() != "active" if metadata else production_metadata,
-            existing_holding=entry.symbol in (existing_holdings or set()),
-            is_leveraged_or_inverse=False,
-            earnings_trading_days=None if entry.is_etf else earnings_by_symbol.get(entry.symbol),
-            # TODO: integrate deterministic FDA/M&A/index-rebalance/investor-day calendars.
-            prohibited_event_risk=None if production_metadata else False,
-            bid=quote[0] if quote else None,
-            ask=quote[1] if quote else None,
-            quote_timestamp=quote[2] if quote else None,
-        ))
+        assets.append(
+            UniverseAsset(
+                symbol=entry.symbol,
+                sector=entry.sector,
+                is_etf=entry.is_etf,
+                asset_class=str(metadata.get("class", "unknown" if production_metadata else "us_equity")).lower(),
+                security_type=security_type,
+                is_tradable=bool(metadata.get("tradable")) if metadata else (None if production_metadata else True),
+                is_halted=False,
+                # TODO: integrate a reliable real-time halt feed; asset "active" is not sufficient proof.
+                halt_status_known=not production_metadata,
+                broker_restricted=str(metadata.get("status", "unknown")).lower() != "active" if metadata else production_metadata,
+                existing_holding=entry.symbol in (existing_holdings or set()),
+                is_leveraged_or_inverse=False,
+                earnings_trading_days=None if entry.is_etf else earnings_by_symbol.get(entry.symbol),
+                # TODO: integrate deterministic FDA/M&A/index-rebalance/investor-day calendars.
+                prohibited_event_risk=None if production_metadata else False,
+                bid=quote[0] if quote else None,
+                ask=quote[1] if quote else None,
+                quote_timestamp=quote[2] if quote else None,
+            )
+        )
     return assets
 
 
@@ -413,5 +416,9 @@ def load_scan_inputs(
     )
     bars_by_symbol = {entry.symbol: bars[entry.symbol] for entry in entries if entry.symbol in bars}
     return ScanInputs(
-        assets=assets, bars_by_symbol=bars_by_symbol, spy_bars=spy_bars, qqq_bars=qqq_bars, sector_bars=sector_bars,
+        assets=assets,
+        bars_by_symbol=bars_by_symbol,
+        spy_bars=spy_bars,
+        qqq_bars=qqq_bars,
+        sector_bars=sector_bars,
     )

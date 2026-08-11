@@ -95,9 +95,14 @@ class PostmortemEngine:
         if backend is not None and model_name and "classification" not in assessment:
             try:
                 llm_assessment = self._classify_with_llm(
-                    backend, model_name, trade, realized_r=realized_r,
-                    mfe_r=mfe / initial_risk_per_share, mae_r=mae / initial_risk_per_share,
-                    holding_days=holding_days, reason_exit=reason_exit,
+                    backend,
+                    model_name,
+                    trade,
+                    realized_r=realized_r,
+                    mfe_r=mfe / initial_risk_per_share,
+                    mae_r=mae / initial_risk_per_share,
+                    holding_days=holding_days,
+                    reason_exit=reason_exit,
                 )
                 assessment = {**llm_assessment, **assessment}
             except Exception:
@@ -143,13 +148,16 @@ class PostmortemEngine:
             },
         )
         self.database.record_postmortem(str(uuid4()), record, model_name)
-        description = (
-            f"Single-trade observation: {trade['setup_type']} in {trade['market_regime']} "
-            f"was classified {classification.value} with realized result {realized_r:+.2f}R."
-        )
+        description = f"Single-trade observation: {trade['setup_type']} in {trade['market_regime']} " f"was classified {classification.value} with realized result {realized_r:+.2f}R."
         self.database.create_observation(
-            str(uuid4()), description, trade_id, confidence=0.1, strategy_version=trade["strategy_version"],
-            applicable_setup=trade["setup_type"], applicable_regime=trade["market_regime"], evidence=record.evidence,
+            str(uuid4()),
+            description,
+            trade_id,
+            confidence=0.1,
+            strategy_version=trade["strategy_version"],
+            applicable_setup=trade["setup_type"],
+            applicable_regime=trade["market_regime"],
+            evidence=record.evidence,
         )
         losses = self.database.consecutive_losses()
         if losses >= self.consecutive_loss_halt:
@@ -157,42 +165,49 @@ class PostmortemEngine:
             self.report_dir.mkdir(parents=True, exist_ok=True)
             report = self.report_dir / f"LOSS_STREAK_REVIEW_{datetime.now(timezone.utc).date().isoformat()}.md"
             report.write_text(
-                "# Consecutive-Loss Review\n\n"
-                f"Generated: {datetime.now(timezone.utc).isoformat()}\n\n"
-                f"Consecutive completed losses: {losses}\n\n"
-                "New entries remain latched off until explicit human review. Review setup quality, regime, "
-                "execution, data integrity, and whether the production strategy should remain unchanged.\n",
+                "# Consecutive-Loss Review\n\n" f"Generated: {datetime.now(timezone.utc).isoformat()}\n\n" f"Consecutive completed losses: {losses}\n\n" "New entries remain latched off until explicit human review. Review setup quality, regime, " "execution, data integrity, and whether the production strategy should remain unchanged.\n",
                 encoding="utf-8",
             )
         return record
 
     def _classify_with_llm(
-        self, backend: StructuredModelBackend, model_name: str, trade: dict[str, Any], *,
-        realized_r: float, mfe_r: float, mae_r: float, holding_days: float, reason_exit: str,
+        self,
+        backend: StructuredModelBackend,
+        model_name: str,
+        trade: dict[str, Any],
+        *,
+        realized_r: float,
+        mfe_r: float,
+        mae_r: float,
+        holding_days: float,
+        reason_exit: str,
     ) -> dict[str, Any]:
         known_lessons = self.database.validated_lessons_for(trade.get("setup_type"), trade.get("market_regime"))
         payload = {
             "candidate": {"candidate_id": trade.get("candidate_id")},
             "trade": {
-                "ticker": trade.get("ticker"), "setup_type": trade.get("setup_type"),
-                "market_regime": trade.get("market_regime"), "sector": trade.get("sector"),
-                "entry_price": trade.get("entry_price"), "initial_stop": trade.get("initial_stop"),
-                "target": trade.get("target"), "candidate_score": trade.get("candidate_score"),
-                "bull_thesis": trade.get("bull_thesis"), "bear_thesis": trade.get("bear_thesis"),
+                "ticker": trade.get("ticker"),
+                "setup_type": trade.get("setup_type"),
+                "market_regime": trade.get("market_regime"),
+                "sector": trade.get("sector"),
+                "entry_price": trade.get("entry_price"),
+                "initial_stop": trade.get("initial_stop"),
+                "target": trade.get("target"),
+                "candidate_score": trade.get("candidate_score"),
+                "bull_thesis": trade.get("bull_thesis"),
+                "bear_thesis": trade.get("bear_thesis"),
                 "stock_relative_strength": trade.get("stock_relative_strength"),
                 "sector_relative_strength": trade.get("sector_relative_strength"),
             },
             "outcome": {
-                "realized_r": realized_r, "mfe_r": mfe_r, "mae_r": mae_r,
-                "holding_period_days": holding_days, "reason_exit": reason_exit,
+                "realized_r": realized_r,
+                "mfe_r": mfe_r,
+                "mae_r": mae_r,
+                "holding_period_days": holding_days,
+                "reason_exit": reason_exit,
             },
             "known_validated_lessons": [{"description": lesson["description"]} for lesson in known_lessons],
-            "instruction": (
-                "Judge this closed trade honestly and only from the supplied data. A loss does not automatically "
-                "mean a bad trade, and a win does not automatically mean a good trade -- judge process, not just "
-                "outcome. If the trade matches a known validated lesson describing a failure pattern, set "
-                "repeats_known_lesson=true and reference it in reasoning."
-            ),
+            "instruction": ("Judge this closed trade honestly and only from the supplied data. A loss does not automatically " "mean a bad trade, and a win does not automatically mean a good trade -- judge process, not just " "outcome. If the trade matches a known validated lesson describing a failure pattern, set " "repeats_known_lesson=true and reference it in reasoning."),
         }
         result = backend.complete(role="postmortem", model_name=model_name, payload=payload, schema=PostmortemAssessment)
         parsed = result if isinstance(result, PostmortemAssessment) else PostmortemAssessment.model_validate(result)

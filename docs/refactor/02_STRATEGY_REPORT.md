@@ -130,14 +130,17 @@ All seven must total exactly 100.
 
 Verification performed:
 
+- `poetry run pytest` — **passed: 157 tests, 0 failures, 0 skipped** (15 dependency/deprecation warnings).
+- Black `--check` on all 14 Python files changed by this refactor — passed.
+- isort `--check-only` on all 14 Python files changed by this refactor — passed.
+- flake8 on all 14 changed Python files with the repository's 420-column Black policy and Black-compatible `E203` exclusion — passed.
 - `npx --yes pyright` — **passed: 0 errors, 0 warnings**.
 - `git diff --check` — passed.
 - Universe CSV validation — 439 unique, complete rows; no duplicate symbol.
-- `poetry run pytest` — **not run: Poetry is not installed**.
-- `python -m pytest` — **not run: no Python runtime is installed or discoverable**.
-- Black/isort/flake8 — not runnable for the same missing Python toolchain.
 
-Therefore the implementation is committed for review but does **not** meet the full §7 definition of done until the pytest/lint suite is executed in a Python/Poetry environment.
+Poetry 2.4.1 is installed outside the active PowerShell `PATH` and was invoked directly. The host only has Python 3.14.7; the locked NumPy 1.26.4 and lxml 5.4.0 releases do not provide compatible Windows wheels and attempted source builds without an installed C++ compiler. Tests were therefore executed in Poetry's project virtual environment with a local, environment-only NumPy 2.5.2 wheel. No dependency file was changed. A Python 3.11–3.13 environment is still required to reproduce the lock exactly.
+
+Repository-wide Black/isort checks also expose a large pre-existing formatting baseline outside this prompt (Black would reformat 143 files). Those unrelated files were deliberately not rewritten; all files owned or touched by this refactor pass their scoped checks.
 
 ## Prompt 03 integration
 
@@ -159,7 +162,8 @@ Each validator exposes `provisional_stop` and marks its calculation with `TODO(p
 
 ## Anything I could not verify
 
-- The pytest, Black, isort, and flake8 results because this host has neither Poetry nor a Python runtime.
+- Exact locked-dependency behavior on Python 3.11–3.13; this host only provides Python 3.14.7, which is incompatible with the locked NumPy/lxml wheels.
+- A clean repository-wide Black/isort baseline without a separate, scope-expansive formatting cleanup of legacy files.
 - Live broker asset/quote payload compatibility, halt status, restrictions, or real spread behavior without credentials; no credentialed request was made.
 - Real-data pass rates or expectancy; synthetic validation proves rules, not strategy edge.
 - Licensed/authoritative point-in-time constituent accuracy for every row in the static universe snapshot.

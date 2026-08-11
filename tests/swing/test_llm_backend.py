@@ -59,8 +59,10 @@ def test_complete_parses_result_and_records_cost(monkeypatch, database):
     backend = AnthropicStructuredBackend(database, api_key="test-key")
 
     result = backend.complete(
-        role="technical", model_name="claude-sonnet-5",
-        payload={"candidate": {"candidate_id": "cand-1"}}, schema=_EchoSchema,
+        role="technical",
+        model_name="claude-sonnet-5",
+        payload={"candidate": {"candidate_id": "cand-1"}},
+        schema=_EchoSchema,
     )
 
     assert result.value == "ok"

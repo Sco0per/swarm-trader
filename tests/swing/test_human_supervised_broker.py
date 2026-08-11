@@ -16,8 +16,14 @@ def _snapshot(**overrides):
     now = datetime.now(timezone.utc).isoformat()
     base = {
         "account": {
-            "account_id": "robinhood-agentic-1", "equity": 2000.0, "cash": 2000.0, "buying_power": 2000.0,
-            "is_paper": False, "is_margin_enabled": False, "dedicated_agentic_account": True, "retrieved_at": now,
+            "account_id": "robinhood-agentic-1",
+            "equity": 2000.0,
+            "cash": 2000.0,
+            "buying_power": 2000.0,
+            "is_paper": False,
+            "is_margin_enabled": False,
+            "dedicated_agentic_account": True,
+            "retrieved_at": now,
         },
         "positions": [],
         "open_orders": [],
@@ -82,8 +88,11 @@ def test_reads_reflect_snapshot():
 
 def test_live_ticket_flow_uses_unchanged_risk_engine(database, settings, candidate, proposal):
     live_settings = SwingSettings(
-        database_path=settings.database_path, do_not_trade_path=settings.do_not_trade_path,
-        execution_mode="live", trading_enabled=True, live_acknowledgement="I_ACKNOWLEDGE_LIVE_RISK",
+        database_path=settings.database_path,
+        do_not_trade_path=settings.do_not_trade_path,
+        execution_mode="live",
+        trading_enabled=True,
+        live_acknowledgement="I_ACKNOWLEDGE_LIVE_RISK",
     )
     broker = HumanSuppliedBrokerProvider(_snapshot())
     result = SwingExecutionService(live_settings, database, broker).submit(proposal, candidate, dry_run=True)
@@ -95,8 +104,11 @@ def test_live_ticket_flow_uses_unchanged_risk_engine(database, settings, candida
 def test_live_ticket_never_calls_place_order_even_if_dry_run_is_disabled(database, settings, candidate, proposal):
     """Defense in depth: even a caller mistake (dry_run=False) must fail closed, not place a real order."""
     live_settings = SwingSettings(
-        database_path=settings.database_path, do_not_trade_path=settings.do_not_trade_path,
-        execution_mode="live", trading_enabled=True, live_acknowledgement="I_ACKNOWLEDGE_LIVE_RISK",
+        database_path=settings.database_path,
+        do_not_trade_path=settings.do_not_trade_path,
+        execution_mode="live",
+        trading_enabled=True,
+        live_acknowledgement="I_ACKNOWLEDGE_LIVE_RISK",
     )
     broker = HumanSuppliedBrokerProvider(_snapshot())
     result = SwingExecutionService(live_settings, database, broker).submit(proposal, candidate, dry_run=False)

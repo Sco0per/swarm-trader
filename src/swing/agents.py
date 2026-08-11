@@ -85,7 +85,8 @@ SchemaT = TypeVar("SchemaT", bound=BaseModel)
 class StructuredModelBackend(Protocol):
     """Provider-neutral adapter; implementations must request schema-constrained output."""
 
-    def complete(self, *, role: str, model_name: str, payload: dict[str, Any], schema: type[SchemaT]) -> SchemaT | dict[str, Any]: ...
+    def complete(self, *, role: str, model_name: str, payload: dict[str, Any], schema: type[SchemaT]) -> SchemaT | dict[str, Any]:
+        ...
 
 
 class ModelUnavailable(RuntimeError):
@@ -122,26 +123,33 @@ class AgentPipeline:
             result = self.backend.complete(role=role, model_name=model_name, payload=payload, schema=schema)
             parsed = result if isinstance(result, schema) else schema.model_validate(result)
             self.database.record_agent_decision(
-                decision_id, role, self.SCHEMA_VERSION, parsed.model_dump(mode="json"), "VALID",
-                candidate_id=candidate.candidate_id, model_name=model_name,
+                decision_id,
+                role,
+                self.SCHEMA_VERSION,
+                parsed.model_dump(mode="json"),
+                "VALID",
+                candidate_id=candidate.candidate_id,
+                model_name=model_name,
                 decision=getattr(getattr(parsed, "decision", None), "value", None),
             )
             return parsed
         except Exception as exc:
             self.database.record_agent_decision(
-                decision_id, role, self.SCHEMA_VERSION, {}, "INVALID",
-                candidate_id=candidate.candidate_id, model_name=model_name, validation_error=str(exc),
+                decision_id,
+                role,
+                self.SCHEMA_VERSION,
+                {},
+                "INVALID",
+                candidate_id=candidate.candidate_id,
+                model_name=model_name,
+                validation_error=str(exc),
             )
             raise
 
     def analyze(self, candidates: list[SwingCandidate]) -> list[TradeProposal]:
         """Return schema-valid BUY proposals; no model or invalid output means no trade."""
         # A model never gets to review a hard-failed or watchlist-only setup.
-        screened = [
-            candidate
-            for candidate in candidates
-            if candidate.score_route in {"strong", "very_strong"} and not candidate.validator_failures
-        ]
+        screened = [candidate for candidate in candidates if candidate.score_route in {"strong", "very_strong"} and not candidate.validator_failures]
         screened.sort(key=lambda candidate: (candidate.score_route != "very_strong", -candidate.score, candidate.ticker))
         finalists: list[tuple[SwingCandidate, TechnicalSwingAnalysis, FundamentalEventAnalysis, BullAnalysis, BearAnalysis]] = []
         for candidate in screened[: self.settings.maximum_scanner_candidates]:
@@ -152,19 +160,18 @@ class AgentPipeline:
                 if not technical.setup_valid or fundamental.has_blocking_event_risk or fundamental.data_gaps:
                     continue
                 bull = self._call("bull", candidate, {**base, "technical": technical.model_dump(), "fundamental": fundamental.model_dump()}, BullAnalysis)
-                known_lessons = [
-                    {"description": lesson["description"], "confidence": lesson["confidence"]}
-                    for lesson in self.database.validated_lessons_for(candidate.setup_type.value, candidate.market_regime.value)
-                ]
+                known_lessons = [{"description": lesson["description"], "confidence": lesson["confidence"]} for lesson in self.database.validated_lessons_for(candidate.setup_type.value, candidate.market_regime.value)]
                 bear = self._call(
-                    "bear", candidate,
-                    {**base, "technical": technical.model_dump(), "fundamental": fundamental.model_dump(), "bull": bull.model_dump(),
-                     "known_lessons": known_lessons,
-                     "instruction": (
-                         "Act independently and kill weak, extended, event-exposed, or rationalized trades. "
-                         "Answer every named checklist field explicitly. If known_lessons describes a validated "
-                         "failure pattern this trade matches, set repeats_known_bad_pattern=true and kill_trade=true."
-                     )},
+                    "bear",
+                    candidate,
+                    {
+                        **base,
+                        "technical": technical.model_dump(),
+                        "fundamental": fundamental.model_dump(),
+                        "bull": bull.model_dump(),
+                        "known_lessons": known_lessons,
+                        "instruction": ("Act independently and kill weak, extended, event-exposed, or rationalized trades. " "Answer every named checklist field explicitly. If known_lessons describes a validated " "failure pattern this trade matches, set repeats_known_bad_pattern=true and kill_trade=true."),
+                    },
                     BearAnalysis,
                 )
                 if bear.kill_trade:
@@ -188,22 +195,24 @@ class AgentPipeline:
                 pm = self._call("portfolio_manager", candidate, payload, PMStructuredDecision)
                 if pm.decision != Decision.BUY:
                     continue
-                proposals.append(TradeProposal(
-                    ticker=pm.ticker,
-                    decision=pm.decision,
-                    setup_type=pm.setup_type,
-                    entry=pm.entry,
-                    stop=pm.stop,
-                    target=pm.target,
-                    confidence_score=pm.confidence_score,
-                    candidate_score=candidate.score,
-                    market_regime=pm.market_regime,
-                    bull_case=pm.bull_case,
-                    bear_case=pm.bear_case,
-                    invalidation=pm.invalidation,
-                    event_risk=pm.event_risk,
-                    strategy_version=self.settings.strategy_version,
-                ))
+                proposals.append(
+                    TradeProposal(
+                        ticker=pm.ticker,
+                        decision=pm.decision,
+                        setup_type=pm.setup_type,
+                        entry=pm.entry,
+                        stop=pm.stop,
+                        target=pm.target,
+                        confidence_score=pm.confidence_score,
+                        candidate_score=candidate.score,
+                        market_regime=pm.market_regime,
+                        bull_case=pm.bull_case,
+                        bear_case=pm.bear_case,
+                        invalidation=pm.invalidation,
+                        event_risk=pm.event_risk,
+                        strategy_version=self.settings.strategy_version,
+                    )
+                )
             except (ModelUnavailable, ValueError, TypeError, RuntimeError):
                 continue
         return proposals

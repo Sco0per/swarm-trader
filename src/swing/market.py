@@ -16,7 +16,6 @@ from .risk import LEVERAGED_OR_INVERSE_ETFS
 from .strategy import score_entry, score_inputs_from_validation, validate_setup
 from .universe import UNIVERSE_VERSION
 
-
 SECTOR_ETFS = {
     "Communication Services": "XLC",
     "Consumer Discretionary": "XLY",
@@ -115,9 +114,7 @@ def atr(frame: pd.DataFrame, period: int = 14) -> float | None:
     if len(frame) < period + 1:
         return None
     previous = frame["close"].shift(1)
-    true_range = pd.concat(
-        [(frame["high"] - frame["low"]), (frame["high"] - previous).abs(), (frame["low"] - previous).abs()], axis=1
-    ).max(axis=1)
+    true_range = pd.concat([(frame["high"] - frame["low"]), (frame["high"] - previous).abs(), (frame["low"] - previous).abs()], axis=1).max(axis=1)
     return float(true_range.rolling(period).mean().iloc[-1])
 
 
@@ -306,17 +303,8 @@ class DeterministicSwingScanner:
                 continue
             report.passed_liquidity_history += 1
             medium = sma(close, self.settings.strategy.medium_ma_period)
-            stock_rs = roc(close, self.settings.strategy.relative_strength_lookback) - roc(
-                _frame(spy_bars)["close"], self.settings.strategy.relative_strength_lookback
-            )
-            if medium is None or not (
-                price > medium
-                and (
-                    _slope(close, self.settings.strategy.medium_ma_period, self.settings.strategy.trend_slope_lookback)
-                    > self.settings.strategy.minimum_trend_slope
-                    or stock_rs >= self.settings.strategy.minimum_spy_relative_strength
-                )
-            ):
+            stock_rs = roc(close, self.settings.strategy.relative_strength_lookback) - roc(_frame(spy_bars)["close"], self.settings.strategy.relative_strength_lookback)
+            if medium is None or not (price > medium and (_slope(close, self.settings.strategy.medium_ma_period, self.settings.strategy.trend_slope_lookback) > self.settings.strategy.minimum_trend_slope or stock_rs >= self.settings.strategy.minimum_spy_relative_strength)):
                 report.reject(symbol, "trend_rs", "trend_rs_ineligible")
                 continue
             report.trend_rs_eligible += 1
@@ -327,13 +315,7 @@ class DeterministicSwingScanner:
             elif asset.prohibited_event_risk:
                 event_risk = True
             else:
-                event_risk = (
-                    False
-                    if asset.is_etf
-                    else None
-                    if asset.earnings_trading_days is None
-                    else asset.earnings_trading_days <= self.settings.earnings_exclusion_trading_days
-                )
+                event_risk = False if asset.is_etf else None if asset.earnings_trading_days is None else asset.earnings_trading_days <= self.settings.earnings_exclusion_trading_days
             validations = [
                 validate_setup(
                     setup_type,

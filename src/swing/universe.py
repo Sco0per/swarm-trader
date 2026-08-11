@@ -6,7 +6,6 @@ import csv
 from dataclasses import dataclass
 from pathlib import Path
 
-
 UNIVERSE_VERSION = "us-liquid-2026-08-11-v1"
 UNIVERSE_AS_OF = "2026-08-11"
 UNIVERSE_SOURCES = (
@@ -43,14 +42,7 @@ def load_universe(path: Path) -> list[UniverseEntry]:
         sector = row["sector"].strip()
         security_type = row["security_type"].strip().lower()
         membership = row["source_membership"].strip()
-        if (
-            not symbol
-            or symbol in seen
-            or not symbol.replace(".", "").replace("-", "").isalnum()
-            or not sector
-            or security_type not in {"common_stock", "etf"}
-            or not membership
-        ):
+        if not symbol or symbol in seen or not symbol.replace(".", "").replace("-", "").isalnum() or not sector or security_type not in {"common_stock", "etf"} or not membership:
             raise RuntimeError(f"Universe file contains an invalid or duplicate row for {symbol!r}")
         seen.add(symbol)
         entries.append(UniverseEntry(symbol, sector, security_type == "etf", membership))

@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -222,9 +221,7 @@ class SwingSettings:
             raise ValueError("Entry limits may not exceed one per day and three per week")
         if not (1 <= self.consecutive_loss_halt <= 3):
             raise ValueError("CONSECUTIVE_LOSS_HALT may not exceed three losses")
-        if self.buy_score_threshold < 80 or not (
-            self.buy_score_threshold <= self.preferred_score_threshold <= self.a_plus_score_threshold <= 100
-        ):
+        if self.buy_score_threshold < 80 or not (self.buy_score_threshold <= self.preferred_score_threshold <= self.a_plus_score_threshold <= 100):
             raise ValueError("Score thresholds must be ordered and BUY_SCORE_THRESHOLD cannot be below 80")
         if not (0 <= self.borderline_score_threshold < self.buy_score_threshold):
             raise ValueError("BORDERLINE_SCORE_THRESHOLD must be below BUY_SCORE_THRESHOLD")

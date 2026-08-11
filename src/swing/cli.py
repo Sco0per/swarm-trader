@@ -11,7 +11,7 @@ from uuid import uuid4
 from .agents import AgentPipeline
 from .brokers.alpaca import AlpacaPaperProvider
 from .brokers.human_supervised import HumanSuppliedBrokerProvider
-from .config import ROOT, load_settings
+from .config import load_settings, ROOT
 from .data_feed import load_scan_inputs
 from .database import SCHEMA_VERSION, SwingDatabase
 from .execution import SwingExecutionService
@@ -84,17 +84,22 @@ def main() -> int:
     if args.command == "init-db":
         print(json.dumps({"database": str(settings.database_path), "schema_version": SCHEMA_VERSION, "counts": database.table_counts()}, indent=2))
     elif args.command == "status":
-        print(json.dumps({
-            "trading_style": settings.trading_style,
-            "execution_mode": settings.execution_mode,
-            "trading_enabled": settings.trading_enabled,
-            "kill_switch": database.get_state("kill_switch", False),
-            "drawdown_halt": database.get_state("drawdown_halt", False),
-            "loss_streak_halt": database.get_state("loss_streak_halt", False),
-            "reconciliation_halt": database.get_state("reconciliation_halt", False),
-            "last_reconciliation": database.get_state("last_reconciliation"),
-            "records": database.table_counts(),
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "trading_style": settings.trading_style,
+                    "execution_mode": settings.execution_mode,
+                    "trading_enabled": settings.trading_enabled,
+                    "kill_switch": database.get_state("kill_switch", False),
+                    "drawdown_halt": database.get_state("drawdown_halt", False),
+                    "loss_streak_halt": database.get_state("loss_streak_halt", False),
+                    "reconciliation_halt": database.get_state("reconciliation_halt", False),
+                    "last_reconciliation": database.get_state("last_reconciliation"),
+                    "records": database.table_counts(),
+                },
+                indent=2,
+            )
+        )
     elif args.command == "analytics":
         print(json.dumps(reports.dashboard_payload(), indent=2, default=str))
     elif args.command == "report":
@@ -131,23 +136,35 @@ def main() -> int:
             print(result.model_dump_json(indent=2))
             return 0 if result.reconciled else 2
         order = ProtectedStopService(database, broker, SwingRiskManager(settings, database)).tighten(
-            args.trade_id, args.broker_stop_order_id, args.new_stop,
+            args.trade_id,
+            args.broker_stop_order_id,
+            args.new_stop,
         )
         print(order.model_dump_json(indent=2))
     elif args.command == "scan":
         inputs = load_scan_inputs(database=database, universe_path=settings.universe_path)
         scanner = DeterministicSwingScanner(settings)
         candidates = scanner.scan(
-            inputs.assets, inputs.bars_by_symbol, spy_bars=inputs.spy_bars, qqq_bars=inputs.qqq_bars,
-            sector_bars=inputs.sector_bars, source="alpaca",
+            inputs.assets,
+            inputs.bars_by_symbol,
+            spy_bars=inputs.spy_bars,
+            qqq_bars=inputs.qqq_bars,
+            sector_bars=inputs.sector_bars,
+            source="alpaca",
         )
         for candidate in candidates:
             database.record_candidate(candidate)
-        print(json.dumps({
-            "candidates_found": len(candidates),
-            "funnel": scanner.last_report.as_dict() if hasattr(scanner, "last_report") else None,
-            "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
-        }, indent=2, default=str))
+        print(
+            json.dumps(
+                {
+                    "candidates_found": len(candidates),
+                    "funnel": scanner.last_report.as_dict() if hasattr(scanner, "last_report") else None,
+                    "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
+                },
+                indent=2,
+                default=str,
+            )
+        )
     elif args.command == "run":
         if settings.execution_mode != "paper":
             raise ValueError("run currently supports EXECUTION_MODE=paper only")
@@ -155,8 +172,12 @@ def main() -> int:
         inputs = load_scan_inputs(database=database, universe_path=settings.universe_path)
         scanner = DeterministicSwingScanner(settings)
         candidates = scanner.scan(
-            inputs.assets, inputs.bars_by_symbol, spy_bars=inputs.spy_bars, qqq_bars=inputs.qqq_bars,
-            sector_bars=inputs.sector_bars, source="alpaca",
+            inputs.assets,
+            inputs.bars_by_symbol,
+            spy_bars=inputs.spy_bars,
+            qqq_bars=inputs.qqq_bars,
+            sector_bars=inputs.sector_bars,
+            source="alpaca",
         )
         for candidate in candidates:
             database.record_candidate(candidate)
@@ -171,28 +192,36 @@ def main() -> int:
             if candidate is None:
                 continue
             result = execution.submit(proposal, candidate, dry_run=not settings.trading_enabled)
-            decisions.append({
-                "ticker": proposal.ticker, "setup_type": proposal.setup_type.value,
-                "status": result.status, "message": result.message, "trade_id": result.trade_id,
-            })
-        print(json.dumps({
-            "execution_mode": settings.execution_mode,
-            "trading_enabled": settings.trading_enabled,
-            "llm_backend_configured": backend is not None,
-            "candidates_found": len(candidates),
-            "proposals_generated": len(proposals),
-            "funnel": scanner.last_report.as_dict() if hasattr(scanner, "last_report") else None,
-            "decisions": decisions,
-        }, indent=2, default=str))
+            decisions.append(
+                {
+                    "ticker": proposal.ticker,
+                    "setup_type": proposal.setup_type.value,
+                    "status": result.status,
+                    "message": result.message,
+                    "trade_id": result.trade_id,
+                }
+            )
+        print(
+            json.dumps(
+                {
+                    "execution_mode": settings.execution_mode,
+                    "trading_enabled": settings.trading_enabled,
+                    "llm_backend_configured": backend is not None,
+                    "candidates_found": len(candidates),
+                    "proposals_generated": len(proposals),
+                    "funnel": scanner.last_report.as_dict() if hasattr(scanner, "last_report") else None,
+                    "decisions": decisions,
+                },
+                indent=2,
+                default=str,
+            )
+        )
     elif args.command == "review-observations":
         results = review_observations(database, settings, ROOT / "reports")
         print(json.dumps(results, indent=2, default=str))
     elif args.command == "live-ticket":
         if settings.execution_mode != "live":
-            raise ValueError(
-                "live-ticket requires EXECUTION_MODE=live, TRADING_ENABLED=true, and "
-                "LIVE_TRADING_ACK=I_ACKNOWLEDGE_LIVE_RISK -- this computes a real-money order ticket"
-            )
+            raise ValueError("live-ticket requires EXECUTION_MODE=live, TRADING_ENABLED=true, and " "LIVE_TRADING_ACK=I_ACKNOWLEDGE_LIVE_RISK -- this computes a real-money order ticket")
         payload = json.loads(args.input.read_text(encoding="utf-8"))
         candidate = SwingCandidate.model_validate(payload["candidate"])
         proposal = TradeProposal.model_validate(payload["proposal"])
@@ -202,12 +231,21 @@ def main() -> int:
         if result.status == "DRY_RUN_APPROVED":
             quote = broker.get_quote(proposal.ticker)
             print("\n--- APPROVED LIVE ORDER TICKET: execute this yourself. Nothing was sent to Robinhood. ---")
-            print(json.dumps({
-                "ticker": proposal.ticker, "side": "buy", "quantity": result.risk.quantity,
-                "limit_price": round(quote.last, 2), "stop_price": proposal.stop, "target_price": proposal.target,
-                "planned_dollar_risk": result.risk.planned_dollar_risk,
-                "planned_account_risk_pct": result.risk.planned_account_risk_pct,
-            }, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "ticker": proposal.ticker,
+                        "side": "buy",
+                        "quantity": result.risk.quantity,
+                        "limit_price": round(quote.last, 2),
+                        "stop_price": proposal.stop,
+                        "target_price": proposal.target,
+                        "planned_dollar_risk": result.risk.planned_dollar_risk,
+                        "planned_account_risk_pct": result.risk.planned_account_risk_pct,
+                    },
+                    indent=2,
+                )
+            )
     elif args.command == "record-live-fill":
         if settings.execution_mode != "live":
             raise ValueError("record-live-fill requires EXECUTION_MODE=live")
@@ -217,22 +255,37 @@ def main() -> int:
         fill = payload["fill"]
         trade_id = str(uuid4())
         database.record_candidate(candidate)
-        database.add_trade({
-            "trade_id": trade_id, "decision_id": proposal.decision_id, "candidate_id": candidate.candidate_id,
-            "ticker": proposal.ticker, "setup_type": proposal.setup_type.value, "status": "OPEN",
-            "strategy_version": proposal.strategy_version,
-            "entry_datetime": fill["entry_datetime"], "entry_price": fill["entry_price"],
-            "initial_stop": proposal.stop, "final_stop": proposal.stop, "target": proposal.target,
-            "shares": fill["shares"], "position_value": fill["shares"] * fill["entry_price"],
-            "planned_dollar_risk": fill.get("planned_dollar_risk", (fill["entry_price"] - proposal.stop) * fill["shares"]),
-            "planned_account_risk_pct": fill.get("planned_account_risk_pct", 0.0),
-            "planned_rr": proposal.planned_rr,
-            "market_regime": proposal.market_regime.value, "sector": candidate.sector,
-            "candidate_score": candidate.score, "bull_thesis": proposal.bull_case, "bear_thesis": proposal.bear_case,
-            "reason_entry": proposal.bull_case, "broker_provider": "robinhood-human-supervised",
-            "broker_order_id": fill.get("broker_order_id"), "order_type": "manual-live",
-            "risk_validation_result": json.dumps({"note": "approved via live-ticket; executed manually by a human"}),
-        })
+        database.add_trade(
+            {
+                "trade_id": trade_id,
+                "decision_id": proposal.decision_id,
+                "candidate_id": candidate.candidate_id,
+                "ticker": proposal.ticker,
+                "setup_type": proposal.setup_type.value,
+                "status": "OPEN",
+                "strategy_version": proposal.strategy_version,
+                "entry_datetime": fill["entry_datetime"],
+                "entry_price": fill["entry_price"],
+                "initial_stop": proposal.stop,
+                "final_stop": proposal.stop,
+                "target": proposal.target,
+                "shares": fill["shares"],
+                "position_value": fill["shares"] * fill["entry_price"],
+                "planned_dollar_risk": fill.get("planned_dollar_risk", (fill["entry_price"] - proposal.stop) * fill["shares"]),
+                "planned_account_risk_pct": fill.get("planned_account_risk_pct", 0.0),
+                "planned_rr": proposal.planned_rr,
+                "market_regime": proposal.market_regime.value,
+                "sector": candidate.sector,
+                "candidate_score": candidate.score,
+                "bull_thesis": proposal.bull_case,
+                "bear_thesis": proposal.bear_case,
+                "reason_entry": proposal.bull_case,
+                "broker_provider": "robinhood-human-supervised",
+                "broker_order_id": fill.get("broker_order_id"),
+                "order_type": "manual-live",
+                "risk_validation_result": json.dumps({"note": "approved via live-ticket; executed manually by a human"}),
+            }
+        )
         print(json.dumps({"trade_id": trade_id, "status": "recorded"}, indent=2))
     elif args.command == "record-live-exit":
         trade = database.get_trade(args.trade_id)
@@ -241,8 +294,10 @@ def main() -> int:
         high, low = database.trade_price_extremes(args.trade_id, float(trade["entry_price"]))
         engine = PostmortemEngine(database, consecutive_loss_halt=settings.consecutive_loss_halt)
         record = engine.close_and_review(
-            args.trade_id, exit_price=args.exit_price,
-            high_during_trade=max(high, args.exit_price), low_during_trade=min(low, args.exit_price),
+            args.trade_id,
+            exit_price=args.exit_price,
+            high_during_trade=max(high, args.exit_price),
+            low_during_trade=min(low, args.exit_price),
             reason_exit=args.reason,
         )
         print(record.model_dump_json(indent=2))

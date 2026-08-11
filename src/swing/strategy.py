@@ -7,7 +7,7 @@ performs no I/O and has no broker, database, network, or LLM dependency.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal, Mapping
 
@@ -115,9 +115,7 @@ def _normalize_frame(raw: pd.DataFrame, *, minimum_sessions: int, as_of: datetim
         raise _DataFailure("bar_data_incomplete")
     if (numeric[["open", "high", "low", "close"]] <= 0).any(axis=None) or (numeric["volume"] < 0).any():
         raise _DataFailure("bar_data_malformed")
-    if (numeric["high"] < numeric[["open", "close", "low"]].max(axis=1)).any() or (
-        numeric["low"] > numeric[["open", "close", "high"]].min(axis=1)
-    ).any():
+    if (numeric["high"] < numeric[["open", "close", "low"]].max(axis=1)).any() or (numeric["low"] > numeric[["open", "close", "high"]].min(axis=1)).any():
         raise _DataFailure("bar_geometry_invalid")
     last = frame.index[-1]
     last_dt = last.to_pydatetime()
@@ -164,17 +162,11 @@ def _build_context(
     minimum_sessions: int,
     as_of: datetime,
 ) -> _Context:
-    frame = _normalize_frame(
-        bars, minimum_sessions=minimum_sessions, as_of=as_of, maximum_age_days=config.maximum_bar_age_calendar_days
-    )
-    spy = _normalize_frame(
-        spy_bars, minimum_sessions=minimum_sessions, as_of=as_of, maximum_age_days=config.maximum_bar_age_calendar_days
-    )
+    frame = _normalize_frame(bars, minimum_sessions=minimum_sessions, as_of=as_of, maximum_age_days=config.maximum_bar_age_calendar_days)
+    spy = _normalize_frame(spy_bars, minimum_sessions=minimum_sessions, as_of=as_of, maximum_age_days=config.maximum_bar_age_calendar_days)
     sector = None
     if sector_bars is not None:
-        sector = _normalize_frame(
-            sector_bars, minimum_sessions=minimum_sessions, as_of=as_of, maximum_age_days=config.maximum_bar_age_calendar_days
-        )
+        sector = _normalize_frame(sector_bars, minimum_sessions=minimum_sessions, as_of=as_of, maximum_age_days=config.maximum_bar_age_calendar_days)
     close = frame["close"]
     price = float(close.iloc[-1])
     ema_short = float(close.ewm(span=config.short_ema_period, adjust=False).mean().iloc[-1])
@@ -199,16 +191,8 @@ def _build_context(
         long_slope=_average_slope(close, config.long_ma_period, config.trend_slope_lookback),
         trend_roc=_roc(close, config.relative_strength_lookback),
         stock_rs_spy=_roc(close, config.relative_strength_lookback) - _roc(spy["close"], config.relative_strength_lookback),
-        stock_rs_sector=(
-            _roc(close, config.relative_strength_lookback) - _roc(sector["close"], config.relative_strength_lookback)
-            if sector is not None
-            else None
-        ),
-        sector_rs_spy=(
-            _roc(sector["close"], config.relative_strength_lookback) - _roc(spy["close"], config.relative_strength_lookback)
-            if sector is not None
-            else None
-        ),
+        stock_rs_sector=(_roc(close, config.relative_strength_lookback) - _roc(sector["close"], config.relative_strength_lookback) if sector is not None else None),
+        sector_rs_spy=(_roc(sector["close"], config.relative_strength_lookback) - _roc(spy["close"], config.relative_strength_lookback) if sector is not None else None),
         volume_ratio=float(frame["volume"].iloc[-1] / volume_average),
         bullish_trigger=bool(close.iloc[-1] > close.iloc[-2] and close.iloc[-1] > frame["open"].iloc[-1]),
     )
@@ -394,9 +378,7 @@ def validate_relative_strength_continuation(
     consolidation_high = float(consolidation["high"].max())
     consolidation_low = float(consolidation["low"].min())
     consolidation_range_atr = (consolidation_high - consolidation_low) / context.atr
-    preceding_volume = float(
-        context.frame["volume"].iloc[-config.rs_consolidation_sessions - config.short_ema_period : -config.rs_consolidation_sessions].mean()
-    )
+    preceding_volume = float(context.frame["volume"].iloc[-config.rs_consolidation_sessions - config.short_ema_period : -config.rs_consolidation_sessions].mean())
     consolidation_volume = float(consolidation["volume"].mean())
     contraction_ratio = consolidation_volume / preceding_volume if preceding_volume > 0 else float("inf")
     # TODO(prompt-03): replace this provisional structural stop with the central stop authority.
@@ -406,12 +388,8 @@ def validate_relative_strength_continuation(
     hostile = market_regime in {MarketRegime.BEAR, MarketRegime.HIGH_VOLATILITY_RISK_OFF}
     conditions = {
         "relative_strength_spy_weak": context.stock_rs_spy >= config.strong_spy_relative_strength,
-        "relative_strength_sector_weak": bool(
-            context.stock_rs_sector is not None and context.stock_rs_sector >= config.minimum_sector_relative_strength
-        ),
-        "sector_relative_strength_weak": bool(
-            context.sector_rs_spy is not None and context.sector_rs_spy >= config.minimum_sector_relative_strength
-        ),
+        "relative_strength_sector_weak": bool(context.stock_rs_sector is not None and context.stock_rs_sector >= config.minimum_sector_relative_strength),
+        "sector_relative_strength_weak": bool(context.sector_rs_spy is not None and context.sector_rs_spy >= config.minimum_sector_relative_strength),
         "trend_structure_invalid": context.ema_short > context.ma_medium > context.ma_long,
         "price_not_above_major_averages": context.price > context.ema_short > context.ma_medium,
         "constructive_consolidation_missing": consolidation_range_atr <= config.rs_consolidation_max_atr,
