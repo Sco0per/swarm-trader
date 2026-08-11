@@ -57,15 +57,16 @@ def _trade_r_values(database: SwingDatabase, trade_ids: list[str]) -> list[float
 
 def _existing_open_hypothesis(database: SwingDatabase, setup: str, regime: str | None) -> str | None:
     rows = database.rows(
-        "SELECT hypothesis_id FROM hypotheses WHERE setup_type IS ? AND market_regime IS ? "
-        "AND status IN ('PROPOSED','VALIDATING') ORDER BY created_at DESC LIMIT 1",
+        "SELECT hypothesis_id FROM hypotheses WHERE setup_type IS ? AND market_regime IS ? " "AND status IN ('PROPOSED','VALIDATING') ORDER BY created_at DESC LIMIT 1",
         (setup, regime),
     )
     return rows[0]["hypothesis_id"] if rows else None
 
 
 def review_observations(
-    database: SwingDatabase, settings: SwingSettings, reports_dir: Path,
+    database: SwingDatabase,
+    settings: SwingSettings,
+    reports_dir: Path,
 ) -> list[dict[str, Any]]:
     """Group observations and propose hypotheses for groups with enough evidence.
 
@@ -82,16 +83,20 @@ def review_observations(
         win_rate = wins / len(r_values)
         expectancy_r = sum(r_values) / len(r_values)
         scope = f"{group.setup} in {group.regime}" if group.regime else group.setup
-        description = (
-            f"{scope}: {len(r_values)} trades, {win_rate:.0%} win rate, {expectancy_r:+.2f}R expectancy "
-            "(aggregated from single-trade postmortem observations; not yet validated)."
-        )
+        description = f"{scope}: {len(r_values)} trades, {win_rate:.0%} win rate, {expectancy_r:+.2f}R expectancy " "(aggregated from single-trade postmortem observations; not yet validated)."
         existing = _existing_open_hypothesis(database, group.setup, group.regime)
         if existing:
-            results.append({
-                "setup_type": group.setup, "market_regime": group.regime, "sample_size": len(r_values),
-                "win_rate": win_rate, "expectancy_r": expectancy_r, "hypothesis_id": existing, "newly_proposed": False,
-            })
+            results.append(
+                {
+                    "setup_type": group.setup,
+                    "market_regime": group.regime,
+                    "sample_size": len(r_values),
+                    "win_rate": win_rate,
+                    "expectancy_r": expectancy_r,
+                    "hypothesis_id": existing,
+                    "newly_proposed": False,
+                }
+            )
             continue
         try:
             hypothesis_id = engine.propose(
@@ -105,8 +110,15 @@ def review_observations(
             )
         except ValueError:
             continue
-        results.append({
-            "setup_type": group.setup, "market_regime": group.regime, "sample_size": len(r_values),
-            "win_rate": win_rate, "expectancy_r": expectancy_r, "hypothesis_id": hypothesis_id, "newly_proposed": True,
-        })
+        results.append(
+            {
+                "setup_type": group.setup,
+                "market_regime": group.regime,
+                "sample_size": len(r_values),
+                "win_rate": win_rate,
+                "expectancy_r": expectancy_r,
+                "hypothesis_id": hypothesis_id,
+                "newly_proposed": True,
+            }
+        )
     return results

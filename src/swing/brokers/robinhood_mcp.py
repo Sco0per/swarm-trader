@@ -12,9 +12,7 @@ class RobinhoodMCPProvider(BrokerProvider):
     available = False
 
     def _unavailable(self, *_args, **_kwargs):
-        raise BrokerUnavailable(
-            "Robinhood MCP is not available. Verify real tool schemas and dedicated Agentic account identity before implementing execution."
-        )
+        raise BrokerUnavailable("Robinhood MCP is not available. Verify real tool schemas and dedicated Agentic account identity before implementing execution.")
 
     get_account = _unavailable
     get_buying_power = _unavailable

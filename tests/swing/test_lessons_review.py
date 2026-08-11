@@ -9,19 +9,35 @@ from src.swing.postmortem import PostmortemEngine
 
 def _closed_trade(database, settings, candidate, *, exit_price: float, index: int) -> str:
     trade_id = str(uuid4())
-    database.add_trade({
-        "trade_id": trade_id, "decision_id": str(uuid4()), "candidate_id": candidate.candidate_id,
-        "ticker": candidate.ticker, "setup_type": candidate.setup_type.value, "status": "OPEN",
-        "strategy_version": settings.strategy_version,
-        "entry_datetime": (datetime.now(timezone.utc) - timedelta(days=5)).isoformat(), "entry_price": 100,
-        "initial_stop": 96, "final_stop": 96, "target": 108, "shares": 2,
-        "planned_dollar_risk": 8, "planned_account_risk_pct": 0.004, "planned_rr": 2,
-        "market_regime": candidate.market_regime.value, "candidate_score": candidate.score,
-        "risk_validation_result": "approved",
-    })
+    database.add_trade(
+        {
+            "trade_id": trade_id,
+            "decision_id": str(uuid4()),
+            "candidate_id": candidate.candidate_id,
+            "ticker": candidate.ticker,
+            "setup_type": candidate.setup_type.value,
+            "status": "OPEN",
+            "strategy_version": settings.strategy_version,
+            "entry_datetime": (datetime.now(timezone.utc) - timedelta(days=5)).isoformat(),
+            "entry_price": 100,
+            "initial_stop": 96,
+            "final_stop": 96,
+            "target": 108,
+            "shares": 2,
+            "planned_dollar_risk": 8,
+            "planned_account_risk_pct": 0.004,
+            "planned_rr": 2,
+            "market_regime": candidate.market_regime.value,
+            "candidate_score": candidate.score,
+            "risk_validation_result": "approved",
+        }
+    )
     PostmortemEngine(database).close_and_review(
-        trade_id, exit_price=exit_price, exit_datetime=datetime.now(timezone.utc) + timedelta(seconds=index),
-        high_during_trade=max(exit_price, 102), low_during_trade=min(exit_price, 95),
+        trade_id,
+        exit_price=exit_price,
+        exit_datetime=datetime.now(timezone.utc) + timedelta(seconds=index),
+        high_during_trade=max(exit_price, 102),
+        low_during_trade=min(exit_price, 95),
         reason_exit="test exit",
     )
     return trade_id

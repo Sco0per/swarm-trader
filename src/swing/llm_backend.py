@@ -66,15 +66,13 @@ class AnthropicStructuredBackend:
     def complete(self, *, role: str, model_name: str, payload: dict[str, Any], schema: type[SchemaT]) -> SchemaT:
         client = self._client(model_name)
         structured = client.with_structured_output(schema, include_raw=True)
-        instruction = (
-            "You are a disciplined swing-trading analyst. Use only the supplied JSON data; "
-            "never invent prices, dates, or facts not present in the payload. "
-            f"Role: {role}. Respond only with the requested structured schema."
+        instruction = "You are a disciplined swing-trading analyst. Use only the supplied JSON data; " "never invent prices, dates, or facts not present in the payload. " f"Role: {role}. Respond only with the requested structured schema."
+        response = structured.invoke(
+            [
+                {"role": "system", "content": instruction},
+                {"role": "user", "content": _to_prompt(payload)},
+            ]
         )
-        response = structured.invoke([
-            {"role": "system", "content": instruction},
-            {"role": "user", "content": _to_prompt(payload)},
-        ])
         parsing_error = response.get("parsing_error") if isinstance(response, dict) else None
         if parsing_error:
             raise ValueError(f"Structured output parsing failed for role={role}: {parsing_error}")
@@ -99,8 +97,12 @@ class AnthropicStructuredBackend:
             candidate_id = candidate_payload.get("candidate_id")
         cost = estimate_cost(model_name, int(prompt_tokens), int(completion_tokens))
         self.database.record_model_cost(
-            role=role, model_name=model_name, prompt_tokens=int(prompt_tokens),
-            completion_tokens=int(completion_tokens), cost=cost, candidate_id=candidate_id,
+            role=role,
+            model_name=model_name,
+            prompt_tokens=int(prompt_tokens),
+            completion_tokens=int(completion_tokens),
+            cost=cost,
+            candidate_id=candidate_id,
         )
 
 
