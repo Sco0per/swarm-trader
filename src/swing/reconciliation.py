@@ -199,6 +199,15 @@ class BrokerReconciler:
                     trade["entry_datetime"] = str(submitted).replace("Z", "+00:00")
                 thesis = TradeThesis.model_validate(payload["thesis"])
                 self.database.add_trade_with_thesis(trade, thesis)
+                if filled_qty > 0 and fill_price is not None:
+                    self.database.record_entry_fill(
+                        trade["trade_id"],
+                        quantity=filled_qty,
+                        price=float(fill_price),
+                        filled_at=str(submitted or datetime.now(timezone.utc).isoformat()).replace("Z", "+00:00"),
+                        broker_fill_id=f"{order_id}:{filled_qty:g}",
+                        payload={"source": "reconciliation_recovery", "cumulative": True},
+                    )
                 self.database.update_admission(intent_id, "SUBMITTED", trade_id=trade["trade_id"], broker_order_id=order_id)
                 self.database.record_execution_event(
                     intent_id=intent_id,
@@ -239,6 +248,14 @@ class BrokerReconciler:
                         discrepancies.append(f"Position quantity mismatch for {symbol}: expected remaining {expected_position_shares:g}, broker position {position_shares:g}")
                         continue
                 filled_shares = position_shares if action is not None else expected_shares
+                if action is None and root_fill_price is not None and filled_shares > 0:
+                    self.database.sync_cumulative_entry_fill(
+                        str(trade["trade_id"]),
+                        cumulative_quantity=filled_shares,
+                        cumulative_average_price=float(root_fill_price),
+                        filled_at=datetime.now(timezone.utc).isoformat(),
+                        broker_fill_id=str(trade.get("broker_order_id") or f"recovered-{trade['trade_id']}"),
+                    )
                 updates = {
                     "status": "OPEN",
                     "shares": filled_shares,
@@ -302,6 +319,13 @@ class BrokerReconciler:
                 updates: dict[str, Any] = {"shares": expected_shares}
                 trade["shares"] = expected_shares
                 if root_fill_price is not None:
+                    self.database.sync_cumulative_entry_fill(
+                        str(trade["trade_id"]),
+                        cumulative_quantity=expected_shares,
+                        cumulative_average_price=float(root_fill_price),
+                        filled_at=datetime.now(timezone.utc).isoformat(),
+                        broker_fill_id=str(trade.get("broker_order_id") or f"recovered-{trade['trade_id']}"),
+                    )
                     updates["entry_price"] = float(root_fill_price)
                     updates["position_value"] = expected_shares * float(root_fill_price)
                     trade["entry_price"] = float(root_fill_price)

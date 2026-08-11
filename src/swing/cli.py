@@ -403,6 +403,14 @@ def main() -> int:
             invalidations=(proposal.invalidation, "setup structure failure"),
         )
         database.add_trade_with_thesis(trade_values, thesis)
+        database.record_entry_fill(
+            trade_id,
+            quantity=float(fill["shares"]),
+            price=actual_entry,
+            filled_at=str(fill["entry_datetime"]),
+            broker_fill_id=str(fill.get("broker_fill_id") or fill.get("broker_order_id") or f"manual:{trade_id}"),
+            payload={"source": "human_recorded_live_fill"},
+        )
         lifecycle = PositionLifecycleService(settings, database)
         lifecycle.create_open(trade_id, current_stop=risk.authoritative_stop, trigger="human_recorded_live_fill")
         lifecycle.mark_protected(

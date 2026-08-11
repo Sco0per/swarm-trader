@@ -109,6 +109,30 @@ def test_partial_fills_and_stop_above_cost_keep_original_denominator():
     assert result.stop_locked_r == pytest.approx(0.30)
 
 
+def test_partial_entry_fills_rebuild_persisted_actual_initial_risk(database, settings, candidate):
+    database.record_candidate(candidate)
+    trade_id = _add_trade(database, settings, candidate, 0, 1, status="PARTIALLY_FILLED", exit_datetime=None)
+    database.record_entry_fill(
+        trade_id,
+        quantity=2,
+        price=100,
+        filled_at="2026-01-02T15:00:00+00:00",
+        broker_fill_id="entry:2",
+    )
+    database.sync_cumulative_entry_fill(
+        trade_id,
+        cumulative_quantity=4,
+        cumulative_average_price=101,
+        filled_at="2026-01-02T15:01:00+00:00",
+        broker_fill_id="entry",
+    )
+    stored = database.get_trade(trade_id)
+    assert stored["shares"] == 4
+    assert stored["entry_price"] == pytest.approx(101)
+    assert stored["initial_risk_dollars"] == pytest.approx(20)
+    assert len(database.rows("SELECT * FROM trade_fills WHERE trade_id=?", (trade_id,))) == 2
+
+
 def test_mae_mfe_from_daily_bar_fixture():
     mfe, mae = excursion_from_daily_bars(
         entry_price=100,

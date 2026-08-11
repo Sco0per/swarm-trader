@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterator
+from uuid import uuid4
 
 from .models import (
     PositionLifecycleState,
@@ -42,7 +43,7 @@ def _turso_serverless():
     return turso_serverless
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 DDL = """
@@ -518,6 +519,17 @@ CREATE TABLE IF NOT EXISTS persisted_reports (
     payload_json TEXT NOT NULL,
     UNIQUE(report_type, generated_at)
 );
+CREATE TABLE IF NOT EXISTS trade_fills (
+    fill_id TEXT PRIMARY KEY,
+    trade_id TEXT NOT NULL REFERENCES trades(trade_id),
+    side TEXT NOT NULL CHECK(side IN ('ENTRY','EXIT')),
+    quantity REAL NOT NULL CHECK(quantity > 0),
+    price REAL NOT NULL CHECK(price > 0),
+    filled_at TEXT NOT NULL,
+    broker_fill_id TEXT UNIQUE,
+    payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_trade_fills_trade ON trade_fills(trade_id,side,filled_at);
 CREATE VIEW IF NOT EXISTS closed_trade_journal AS
 SELECT
     ticker,
@@ -663,6 +675,10 @@ class SwingDatabase:
                 existing = 5
             if int(existing) < 6:
                 self._migrate_v6(connection)
+                connection.execute(
+                    "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(6, ?)",
+                    (_now(),),
+                )
             connection.executescript(JOURNAL_DDL)
             connection.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
@@ -1620,6 +1636,99 @@ class SwingDatabase:
             result[field] = json.loads(result[field])
         return result
 
+    def record_entry_fill(
+        self,
+        trade_id: str,
+        *,
+        quantity: float,
+        price: float,
+        filled_at: str,
+        broker_fill_id: str | None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Add one entry fill and recompute actual fixed-R basis from fill lots."""
+
+        if quantity <= 0 or price <= 0:
+            raise ValueError("Entry fill quantity and price must be positive")
+        with self.connect() as connection:
+            trade = connection.execute("SELECT status,initial_stop FROM trades WHERE trade_id=?", (trade_id,)).fetchone()
+            if not trade:
+                raise KeyError(trade_id)
+            if trade["status"] == "CLOSED":
+                raise ValueError("Cannot add an entry fill to a closed trade")
+            exit_count = connection.execute("SELECT COUNT(*) FROM trade_fills WHERE trade_id=? AND side='EXIT'", (trade_id,)).fetchone()[0]
+            if exit_count:
+                raise ValueError("Cannot add an entry fill after an exit fill")
+            connection.execute(
+                """INSERT OR IGNORE INTO trade_fills
+                   (fill_id,trade_id,side,quantity,price,filled_at,broker_fill_id,payload_json)
+                   VALUES(?,?,'ENTRY',?,?,?,?,?)""",
+                (
+                    str(uuid4()),
+                    trade_id,
+                    quantity,
+                    price,
+                    filled_at,
+                    broker_fill_id,
+                    _json(payload or {}),
+                ),
+            )
+            totals = connection.execute(
+                """SELECT SUM(quantity) AS quantity,SUM(quantity*price) AS cost
+                   FROM trade_fills WHERE trade_id=? AND side='ENTRY'""",
+                (trade_id,),
+            ).fetchone()
+            total_quantity = float(totals["quantity"] or 0)
+            total_cost = float(totals["cost"] or 0)
+            average_entry = total_cost / total_quantity
+            actual_initial_risk = total_cost - total_quantity * float(trade["initial_stop"])
+            if actual_initial_risk <= 0:
+                raise ValueError("Entry fills do not produce positive initial risk")
+            connection.execute(
+                """UPDATE trades SET shares=?,entry_price=?,position_value=?,initial_risk_dollars=?,updated_at=?
+                   WHERE trade_id=?""",
+                (
+                    total_quantity,
+                    average_entry,
+                    total_cost,
+                    actual_initial_risk,
+                    _now(),
+                    trade_id,
+                ),
+            )
+
+    def sync_cumulative_entry_fill(
+        self,
+        trade_id: str,
+        *,
+        cumulative_quantity: float,
+        cumulative_average_price: float,
+        filled_at: str,
+        broker_fill_id: str,
+    ) -> None:
+        """Convert a broker cumulative fill update into one incremental lot."""
+
+        rows = self.rows(
+            """SELECT COALESCE(SUM(quantity),0) AS quantity,COALESCE(SUM(quantity*price),0) AS cost
+               FROM trade_fills WHERE trade_id=? AND side='ENTRY'""",
+            (trade_id,),
+        )
+        prior_quantity = float(rows[0]["quantity"])
+        prior_cost = float(rows[0]["cost"])
+        delta_quantity = cumulative_quantity - prior_quantity
+        if delta_quantity <= 1e-9:
+            return
+        delta_cost = cumulative_quantity * cumulative_average_price - prior_cost
+        delta_price = delta_cost / delta_quantity
+        self.record_entry_fill(
+            trade_id,
+            quantity=delta_quantity,
+            price=delta_price,
+            filled_at=filled_at,
+            broker_fill_id=f"{broker_fill_id}:{cumulative_quantity:g}",
+            payload={"source": "broker_cumulative_fill"},
+        )
+
     def record_trade_snapshot(
         self,
         trade_id: str,
@@ -2053,6 +2162,7 @@ class SwingDatabase:
         tables = [
             "trades",
             "trade_snapshots",
+            "trade_fills",
             "market_regimes",
             "candidate_scores",
             "agent_decisions",

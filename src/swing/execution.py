@@ -360,6 +360,15 @@ class SwingExecutionService:
         )
         try:
             self.database.add_trade_with_thesis(stored_trade, thesis)
+            if order.filled_quantity > 0:
+                self.database.record_entry_fill(
+                    trade_id,
+                    quantity=order.filled_quantity,
+                    price=order.average_fill_price or quote.last,
+                    filled_at=order.submitted_at.isoformat(),
+                    broker_fill_id=f"{order.broker_order_id}:{order.filled_quantity:g}",
+                    payload={"source": self.broker.name, "cumulative": True},
+                )
             self.database.update_admission(
                 intent_id,
                 "SUBMITTED",
