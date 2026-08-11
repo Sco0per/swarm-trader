@@ -195,4 +195,5 @@ class PostmortemEngine:
             ),
         }
         result = backend.complete(role="postmortem", model_name=model_name, payload=payload, schema=PostmortemAssessment)
-        return result.model_dump(mode="json")
+        parsed = result if isinstance(result, PostmortemAssessment) else PostmortemAssessment.model_validate(result)
+        return parsed.model_dump(mode="json")

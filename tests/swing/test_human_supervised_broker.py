@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import cast
 
 import pytest
 
@@ -8,6 +9,7 @@ from src.swing.brokers.base import BrokerUnavailable
 from src.swing.brokers.human_supervised import HumanSuppliedBrokerProvider
 from src.swing.config import SwingSettings
 from src.swing.execution import SwingExecutionService
+from src.swing.models import OrderIntent
 
 
 def _snapshot(**overrides):
@@ -51,7 +53,7 @@ def test_rejects_paper_flag():
 def test_state_changing_methods_always_raise():
     broker = HumanSuppliedBrokerProvider(_snapshot())
     with pytest.raises(BrokerUnavailable):
-        broker.place_order(None)
+        broker.place_order(cast(OrderIntent, None))
     with pytest.raises(BrokerUnavailable):
         broker.cancel_order("x")
     with pytest.raises(BrokerUnavailable):

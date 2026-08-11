@@ -338,6 +338,14 @@ def test_scanner_scores_viable_asset_and_excludes_banned(settings):
         "close": close,
         "volume": np.full(len(index), 2_000_000),
     }, index=index)
+    benchmark_close = np.linspace(70, 90, len(index))
+    benchmark = pd.DataFrame({
+        "open": benchmark_close - 0.25,
+        "high": benchmark_close + 1,
+        "low": benchmark_close - 1,
+        "close": benchmark_close,
+        "volume": np.full(len(index), 2_000_000),
+    }, index=index)
     assets = [
         UniverseAsset("GOOD", sector="Technology", earnings_trading_days=10, bid=99.95, ask=100.05),
         UniverseAsset("TQQQ", is_etf=True, bid=99.95, ask=100.05),
@@ -346,8 +354,8 @@ def test_scanner_scores_viable_asset_and_excludes_banned(settings):
     results = DeterministicSwingScanner(settings).scan(
         assets,
         {"GOOD": frame, "TQQQ": frame, "HALT": frame},
-        spy_bars=frame,
-        qqq_bars=frame,
+        spy_bars=benchmark,
+        qqq_bars=benchmark,
         source="test-feed",
     )
     assert [candidate.ticker for candidate in results] == ["GOOD"]

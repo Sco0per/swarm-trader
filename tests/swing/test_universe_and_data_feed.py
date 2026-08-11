@@ -135,7 +135,7 @@ def test_fetch_earnings_trading_days_batch_runs_concurrently(monkeypatch, tmp_pa
     elapsed = time.monotonic() - started
 
     assert set(results) == set(symbols)
-    assert all(0 < days <= 10 for days in results.values())
+    assert all(days is not None and 0 < days <= 10 for days in results.values())
     assert elapsed < delay_seconds * len(symbols)
 
 
@@ -154,7 +154,7 @@ def test_fetch_earnings_trading_days_batch_uses_turso_cache_and_skips_lookup(mon
         def set_earnings_cache_many(self, entries):
             raise AssertionError("nothing should need writing back on a full cache hit")
 
-    results = data_feed.fetch_earnings_trading_days_batch(["AAA"], database=_FakeDatabase())
+    results = data_feed.fetch_earnings_trading_days_batch(["AAA"], database=_FakeDatabase())  # type: ignore[arg-type]
     assert results == {"AAA": 5}
 
 
@@ -175,7 +175,7 @@ def test_fetch_earnings_trading_days_batch_survives_turso_errors(monkeypatch, tm
         def set_earnings_cache_many(self, entries):
             raise RuntimeError("Turso unreachable")
 
-    results = data_feed.fetch_earnings_trading_days_batch(["AAA"], database=_BrokenDatabase())
+    results = data_feed.fetch_earnings_trading_days_batch(["AAA"], database=_BrokenDatabase())  # type: ignore[arg-type]
     assert results["AAA"] is not None
 
 
@@ -208,7 +208,7 @@ def test_build_universe_assets_passes_database_through_for_stocks(monkeypatch, t
 
     sentinel_database = object()
     entries = [UniverseEntry(symbol="AAA", sector="Technology", is_etf=False)]
-    assets = data_feed.build_universe_assets(entries, database=sentinel_database)
+    assets = data_feed.build_universe_assets(entries, database=sentinel_database)  # type: ignore[arg-type]
 
     assert seen["symbols"] == ["AAA"]
     assert seen["database"] is sentinel_database

@@ -32,6 +32,7 @@ class _FakeChatAnthropic:
 
     def with_structured_output(self, schema, include_raw=True):
         assert include_raw is True
+        assert self.response is not None
         return _FakeStructuredRunnable(self.response)
 
 
