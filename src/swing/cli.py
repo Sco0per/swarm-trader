@@ -30,6 +30,8 @@ from .models import (
     TradeProposal,
     TradeThesis,
 )
+from .notification_channels import TelegramChannel, drain_pending_notifications
+from .notifications import NotificationService, NotificationType
 from .postmortem import PostmortemEngine
 from .reconciliation import BrokerReconciler
 from .reporting import ReportingService
@@ -40,6 +42,44 @@ from .stops import ProtectedStopService
 
 def _backend_if_configured(database: SwingDatabase) -> AnthropicStructuredBackend | None:
     return AnthropicStructuredBackend(database) if os.getenv("ANTHROPIC_API_KEY") else None
+
+
+def _channel_if_configured(settings) -> TelegramChannel | None:
+    token, chat_id = settings.telegram.bot_token, settings.telegram.chat_id
+    return TelegramChannel(token, chat_id) if token and chat_id else None
+
+
+_OPENED_STATUSES = {"SUBMITTED"}
+_NEEDS_ATTENTION_STATUSES = {"UNKNOWN_REQUIRES_RECONCILIATION", "UNKNOWN", "HALTED", "PROTECTION_FAILURE_HALTED"}
+
+
+def _emit_run_cycle_summary(database: SwingDatabase, decisions: list[dict], *, candidates_found: int, scan_run_id: str) -> None:
+    opened = [d for d in decisions if d["status"] in _OPENED_STATUSES]
+    attention = [d for d in decisions if d["status"] in _NEEDS_ATTENTION_STATUSES]
+    if attention:
+        severity, reason_code = "CRITICAL", "NEEDS_RECONCILIATION"
+        lines = [f"ATTENTION: {len(attention)} decision(s) need review"]
+        lines += [f"{d['ticker']}: {d['status']} -- {d['message']}" for d in attention]
+    elif opened:
+        severity, reason_code = "INFO", "TRADE_OPENED"
+        lines = [f"Trade entered: {len(opened)} position(s)"]
+        lines += [
+            f"{d['ticker']} ({d['setup_type']}) entry={d['entry']} stop={d['stop']} "
+            f"target={d['target']} shares={d['quantity']} risk=${d['planned_dollar_risk']:.2f}"
+            for d in opened
+        ]
+    else:
+        severity, reason_code = "INFO", "NO_TRADE"
+        lines = [f"No trade found ({candidates_found} candidate(s) scanned, {len(decisions)} reviewed, 0 opened)"]
+    text = "\n".join(lines)
+    NotificationService(database).emit(
+        NotificationType.RUN_CYCLE_SUMMARY,
+        severity=severity,
+        title=text.splitlines()[0],
+        reason_code=reason_code,
+        payload={"message": text, "decisions": decisions, "candidates_found": candidates_found},
+        dedupe_key=f"run:{scan_run_id}",
+    )
 
 
 def _database():
@@ -309,8 +349,15 @@ def _run() -> int:
                     "message": result.message,
                     "reason_code": result.risk.reason_code,
                     "trade_id": result.trade_id,
+                    "entry": proposal.entry,
+                    "stop": proposal.stop,
+                    "target": proposal.target,
+                    "quantity": result.risk.quantity,
+                    "planned_dollar_risk": result.risk.planned_dollar_risk,
+                    "planned_account_risk_pct": result.risk.planned_account_risk_pct,
                 }
             )
+        _emit_run_cycle_summary(database, decisions, candidates_found=len(candidates), scan_run_id=scan_run_id)
         print(
             json.dumps(
                 {
@@ -480,10 +527,35 @@ def main() -> int:
     """Run the CLI without exposing local variables or credential-bearing tracebacks."""
 
     try:
-        return _run()
+        exit_code = _run()
+        error_text = None
     except Exception as exc:
-        print(json.dumps({"status": "ERROR", "error": redact_text(exc)}), file=sys.stderr)
-        return 2
+        error_text = redact_text(exc)
+        print(json.dumps({"status": "ERROR", "error": error_text}), file=sys.stderr)
+        exit_code = 2
+    _finalize_notifications_best_effort(error_text)
+    return exit_code
+
+
+def _finalize_notifications_best_effort(error_text: str | None) -> None:
+    """Emit a RUN_FAILED event (if applicable) and drain pending deliveries.
+
+    Runs after every command, not just `run`, and must never raise or print
+    -- a notification-delivery problem is not a trading-pipeline problem.
+    """
+    try:
+        settings, database = _database()
+        if error_text is not None:
+            NotificationService(database).emit(
+                NotificationType.RUN_FAILED,
+                severity="CRITICAL",
+                title="Swing CLI run failed",
+                reason_code="RUN_EXCEPTION",
+                payload={"error": error_text},
+            )
+        drain_pending_notifications(database, _channel_if_configured(settings))
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

@@ -54,6 +54,14 @@ class ModelSettings:
 
 
 @dataclass(frozen=True)
+class TelegramSettings:
+    """Optional outbound notification channel; unset means delivery is disabled."""
+
+    bot_token: str | None = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN") or None)
+    chat_id: str | None = field(default_factory=lambda: os.getenv("TELEGRAM_CHAT_ID") or None)
+
+
+@dataclass(frozen=True)
 class ScheduleSettings:
     """Named-zone schedule values owned by the central settings model."""
 
@@ -256,6 +264,7 @@ class SwingSettings:
     maximum_scanner_candidates: int = 20
     maximum_pm_candidates: int = 5
     models: ModelSettings = field(default_factory=ModelSettings)
+    telegram: TelegramSettings = field(default_factory=TelegramSettings)
     schedule: ScheduleSettings = field(default_factory=ScheduleSettings)
     strategy: StrategySettings = field(default_factory=StrategySettings)
     score_weights: EntryScoreWeights = field(default_factory=EntryScoreWeights)

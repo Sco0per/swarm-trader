@@ -13,6 +13,7 @@ from src.swing.models import (
     SwingCandidate,
     TimestampedData,
 )
+from src.swing.notification_channels import FakeNotificationChannel
 
 
 def _make_candidate(ticker: str) -> SwingCandidate:
@@ -126,7 +127,7 @@ def _fake_broker() -> FakeBrokerProvider:
     return broker
 
 
-def _run_cli(monkeypatch, tmp_path, capsys, *, argv, env, candidates, backend):
+def _run_cli(monkeypatch, tmp_path, capsys, *, argv, env, candidates, backend, telegram_channel=None):
     monkeypatch.setattr(
         cli_module,
         "load_scan_inputs",
@@ -143,6 +144,16 @@ def _run_cli(monkeypatch, tmp_path, capsys, *, argv, env, candidates, backend):
     monkeypatch.setattr(cli_module, "AlpacaPaperProvider", lambda key, secret: broker)
     monkeypatch.setattr(cli_module, "AnthropicStructuredBackend", lambda database: backend)
     monkeypatch.setenv("SWING_DATABASE_PATH", str(tmp_path / "swing.db"))
+    if telegram_channel is not None:
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "test-chat")
+        monkeypatch.setattr(cli_module, "TelegramChannel", lambda *args, **kwargs: telegram_channel)
+    else:
+        # Guard against a developer's real TELEGRAM_* env vars leaking into
+        # these tests and causing main()'s notification drain to attempt a
+        # real network call.
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+        monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr("sys.argv", ["swing-trader", *argv])
@@ -187,6 +198,44 @@ def test_run_with_backend_respects_one_trade_per_day_limit(monkeypatch, tmp_path
     statuses = {decision["ticker"]: decision["status"] for decision in payload["decisions"]}
     assert list(statuses.values()).count("SUBMITTED") == 1
     assert "REJECTED" in statuses.values()
+
+
+def test_run_with_no_proposals_notifies_no_trade_found(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    fake_channel = FakeNotificationChannel()
+    _run_cli(
+        monkeypatch,
+        tmp_path,
+        capsys,
+        argv=["run"],
+        env={"TRADING_ENABLED": "false"},
+        candidates=[_make_candidate("AAA")],
+        backend=_StubBackend(),
+        telegram_channel=fake_channel,
+    )
+    assert any("No trade found" in message for message in fake_channel.sent)
+
+
+def test_run_with_submitted_trade_notifies_trade_entered(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    fake_channel = FakeNotificationChannel()
+    payload = _run_cli(
+        monkeypatch,
+        tmp_path,
+        capsys,
+        argv=["run"],
+        env={
+            "TRADING_ENABLED": "true",
+            "ANTHROPIC_API_KEY": "test-key",
+            "ANALYST_MODEL": "claude-sonnet-5",
+            "PORTFOLIO_MANAGER_MODEL": "claude-opus-5",
+        },
+        candidates=[_make_candidate("AAA"), _make_candidate("BBB")],
+        backend=_StubBackend(),
+        telegram_channel=fake_channel,
+    )
+    submitted_ticker = next(decision["ticker"] for decision in payload["decisions"] if decision["status"] == "SUBMITTED")
+    assert any("Trade entered" in message and submitted_ticker in message for message in fake_channel.sent)
 
 
 def test_scan_records_candidates_without_any_llm_call(monkeypatch, tmp_path, capsys):

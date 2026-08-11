@@ -1915,6 +1915,15 @@ class SwingDatabase:
         except self.integrity_errors:
             return False
 
+    def mark_notification_delivery(self, notification_id: int, status: str) -> None:
+        if status not in {"SENT", "FAILED"}:
+            raise ValueError("status must be SENT or FAILED")
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE notifications SET delivery_status=? WHERE notification_id=?",
+                (status, notification_id),
+            )
+
     def record_log(
         self,
         *,
