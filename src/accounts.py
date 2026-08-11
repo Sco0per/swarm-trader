@@ -1,15 +1,12 @@
 """
-Account routing for multi-account Alpaca setup.
+Account routing for the swing-only Alpaca setup.
 
-Two accounts:
-  - "swing" (Primary):     ALPACA_API_KEY / ALPACA_API_SECRET — multi-day holds
-  - "day"   (DayTrading):  ALPACA_DAY_API_KEY / ALPACA_DAY_API_SECRET — intraday, flattens EOD
+One account:
+  - "swing" (Primary): ALPACA_API_KEY / ALPACA_API_SECRET — multi-day holds
 
-Credentials are selected based on trading mode. All API helpers accept
-an optional `mode` parameter; if omitted, the current trading mode
-(from trading_mode.json) determines which account to use.
-
-If only the primary account is configured, both modes share it (backward compatible).
+Day-account routing (ALPACA_DAY_*) was removed: this project is swing-only and
+`get_account_for_mode` refuses any mode other than "swing". Legacy callers pass
+an optional `mode` parameter, which must be "swing" or None.
 """
 
 import os
@@ -53,30 +50,19 @@ def _load_accounts() -> None:
             api_secret=swing_secret,
         )
 
-    # Day trading account (optional — ALPACA_DAY_API_KEY / ALPACA_DAY_API_SECRET)
-    day_key = os.environ.get("ALPACA_DAY_API_KEY", "")
-    day_secret = os.environ.get("ALPACA_DAY_API_SECRET", "")
-    if day_key and day_secret:
-        _ACCOUNTS["day"] = AlpacaAccount(
-            name="DayTrading",
-            account_id=os.environ.get("ALPACA_DAY_ACCOUNT_ID", "unknown"),
-            api_key=day_key,
-            api_secret=day_secret,
-        )
-
 
 def get_account_for_mode(mode: str = None) -> AlpacaAccount:
     """
-    Get the correct Alpaca account for the given trading mode.
+    Get the Alpaca account for the given trading mode.
 
     Args:
-        mode: "swing" or "day". If None, resolves from trading_mode.json.
+        mode: must be "swing" (or None, which resolves to "swing").
 
     Returns:
-        AlpacaAccount with credentials for the appropriate account.
+        AlpacaAccount with credentials for the swing account.
 
     Raises:
-        ValueError if the account for the given mode is not configured.
+        ValueError if a non-swing mode is requested or the account is not configured.
     """
     if not _ACCOUNTS:
         _load_accounts()
@@ -98,13 +84,6 @@ def get_account_for_mode(mode: str = None) -> AlpacaAccount:
         f"No Alpaca account configured for mode '{mode}'. "
         "Check ALPACA_API_KEY / ALPACA_SWING_API_KEY in .env"
     )
-
-
-def get_all_accounts() -> dict[str, AlpacaAccount]:
-    """Return all configured accounts."""
-    if not _ACCOUNTS:
-        _load_accounts()
-    return dict(_ACCOUNTS)
 
 
 # Auto-load on import
