@@ -367,6 +367,7 @@ def build_universe_assets(
                 existing_holding=entry.symbol in (existing_holdings or set()),
                 is_leveraged_or_inverse=False,
                 earnings_trading_days=None if entry.is_etf else earnings_by_symbol.get(entry.symbol),
+                earnings_data_status=("clear" if entry.is_etf or earnings_by_symbol.get(entry.symbol) is not None else "unavailable"),
                 # TODO: integrate deterministic FDA/M&A/index-rebalance/investor-day calendars.
                 prohibited_event_risk=None if production_metadata else False,
                 bid=quote[0] if quote else None,

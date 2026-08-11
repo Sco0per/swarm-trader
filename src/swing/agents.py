@@ -16,9 +16,6 @@ class TechnicalSwingAnalysis(BaseModel):
     model_config = ConfigDict(extra="forbid")
     trend_structure: str
     setup_valid: bool
-    entry: float = Field(gt=0)
-    stop: float = Field(gt=0)
-    target: float = Field(gt=0)
     support_resistance: str
     volume_analysis: str
     invalidation: str
@@ -67,9 +64,6 @@ class PMStructuredDecision(BaseModel):
     ticker: str
     decision: Decision
     setup_type: SetupType
-    entry: float = Field(gt=0)
-    stop: float = Field(gt=0)
-    target: float = Field(gt=0)
     confidence_score: float = Field(ge=0, le=100)
     market_regime: MarketRegime
     bull_case: str
@@ -144,6 +138,22 @@ class AgentPipeline:
                 model_name=model_name,
                 validation_error=str(exc),
             )
+            self.database.record_violation(
+                "llm_schema",
+                f"{role} output was unavailable or schema-invalid",
+                ticker=candidate.ticker,
+                blocked=True,
+            )
+            self.database.record_risk_rejection(
+                reason_code="REJECT_LLM_SCHEMA",
+                rule="llm_schema",
+                reason=f"{role} output was unavailable or schema-invalid",
+                ticker=candidate.ticker,
+                decision_id=None,
+                intent_id=None,
+                candidate=candidate.model_dump(mode="json"),
+                computed_values={"role": role},
+            )
             raise
 
     def analyze(self, candidates: list[SwingCandidate]) -> list[TradeProposal]:
@@ -189,7 +199,7 @@ class AgentPipeline:
                 "bull": bull.model_dump(),
                 "bear": bear.model_dump(),
                 "allowed_decisions": [decision.value for decision in Decision],
-                "constraints": "Risk code has final authority. Do not choose quantity. NO_TRADE is acceptable.",
+                "constraints": "Python owns entry, stop, target, quantity, and every limit. NO_TRADE is acceptable.",
             }
             try:
                 pm = self._call("portfolio_manager", candidate, payload, PMStructuredDecision)
@@ -200,9 +210,9 @@ class AgentPipeline:
                         ticker=pm.ticker,
                         decision=pm.decision,
                         setup_type=pm.setup_type,
-                        entry=pm.entry,
-                        stop=pm.stop,
-                        target=pm.target,
+                        entry=candidate.price,
+                        stop=candidate.structural_invalidation,
+                        target=candidate.resistance,
                         confidence_score=pm.confidence_score,
                         candidate_score=candidate.score,
                         market_regime=pm.market_regime,

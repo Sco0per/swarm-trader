@@ -129,7 +129,10 @@ class SwingCandidate(BaseModel):
     volume_ratio: float | None = None
     support: float = Field(gt=0)
     resistance: float = Field(gt=0)
+    structural_invalidation: float = Field(gt=0)
+    major_event_status: Literal["clear", "blocked", "unknown", "stale", "conflicting", "malformed"] = "unknown"
     earnings_trading_days: int | None = None
+    earnings_data_status: Literal["clear", "unavailable", "stale", "conflicting", "malformed"] = "unavailable"
     is_etf: bool = False
     is_leveraged_or_inverse: bool = False
     is_halted: bool = False
@@ -221,6 +224,7 @@ class PortfolioRiskState(BaseModel):
     open_orders: list[dict[str, Any]] = Field(default_factory=list)
     equity_high: float
     drawdown_pct: float = 0.0
+    weekly_drawdown_pct: float = 0.0
     planned_open_risk: float = 0.0
     new_positions_today: int = 0
     new_positions_this_week: int = 0
@@ -235,12 +239,15 @@ class RiskDecision(BaseModel):
     approved: bool
     reason: str
     rule: str | None = None
+    reason_code: str | None = None
     quantity: int = 0
     allowed_dollar_risk: float = 0.0
     planned_dollar_risk: float = 0.0
     planned_account_risk_pct: float = 0.0
     planned_rr: float = 0.0
     applied_risk_pct: float = 0.0
+    authoritative_stop: float | None = None
+    risk_constraints: dict[str, int] = Field(default_factory=dict)
 
 
 class OrderIntent(BaseModel):

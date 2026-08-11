@@ -154,18 +154,26 @@ class SwingSettings:
     do_not_trade_path: Path = ROOT / "config" / "do_not_trade.yaml"
     universe_path: Path = ROOT / "config" / "universe" / "us_liquid_2026-08-11.csv"
 
-    normal_risk_pct: float = 0.005
+    normal_risk_pct: float = 0.0075
     a_plus_risk_pct: float = 0.0075
     absolute_max_risk_pct: float = 0.01
     reduced_risk_pct: float = 0.003
     reduce_risk_drawdown_pct: float = 0.05
     halt_drawdown_pct: float = 0.08
     max_combined_open_risk_pct: float = 0.02
+    max_sector_open_risk_pct: float = 0.015
+    max_cluster_open_risk_pct: float = 0.01
     max_position_exposure_pct: float = 0.35
     max_open_positions: int = 3
     max_new_positions_day: int = 1
     max_new_positions_week: int = 3
     consecutive_loss_halt: int = 3
+    weekly_drawdown_halt_pct: float = 0.04
+
+    minimum_stop_atr: float = 0.75
+    maximum_stop_atr: float = 3.0
+    maximum_adv_fraction: float = 0.001
+    broker_min_quantity: int = 1
 
     minimum_rr: float = 2.0
     exceptional_minimum_rr: float = 1.5
@@ -199,8 +207,8 @@ class SwingSettings:
             raise ValueError("Only TRADING_STYLE=swing is supported")
         if self.execution_mode not in {"backtest", "paper", "live"}:
             raise ValueError("EXECUTION_MODE must be backtest, paper, or live")
-        if not (0 < self.normal_risk_pct <= 0.005):
-            raise ValueError("NORMAL_RISK_PCT may not exceed the immutable 0.50% ceiling")
+        if not (0 < self.normal_risk_pct <= 0.0075):
+            raise ValueError("NORMAL_RISK_PCT may not exceed the immutable 0.75% ceiling")
         if not (self.normal_risk_pct <= self.a_plus_risk_pct <= 0.0075):
             raise ValueError("A_PLUS_RISK_PCT may not exceed the immutable 0.75% ceiling")
         if not (self.a_plus_risk_pct <= self.absolute_max_risk_pct <= 0.01):
@@ -213,6 +221,10 @@ class SwingSettings:
             raise ValueError("Drawdown thresholds must be positive and ordered")
         if not (0 < self.max_combined_open_risk_pct <= 0.02):
             raise ValueError("MAX_COMBINED_OPEN_RISK_PCT may not exceed 2.00%")
+        if not (0 < self.max_sector_open_risk_pct <= 0.015):
+            raise ValueError("MAX_SECTOR_OPEN_RISK_PCT may not exceed the immutable 1.50% ceiling")
+        if not (0 < self.max_cluster_open_risk_pct <= 0.01):
+            raise ValueError("MAX_CLUSTER_OPEN_RISK_PCT may not exceed the immutable 1.00% ceiling")
         if not (0 < self.max_position_exposure_pct <= 0.35):
             raise ValueError("MAX_POSITION_EXPOSURE_PCT may not exceed 35%")
         if not (1 <= self.max_open_positions <= 3):
@@ -221,6 +233,18 @@ class SwingSettings:
             raise ValueError("Entry limits may not exceed one per day and three per week")
         if not (1 <= self.consecutive_loss_halt <= 3):
             raise ValueError("CONSECUTIVE_LOSS_HALT may not exceed three losses")
+        if not (0 < self.weekly_drawdown_halt_pct <= 0.05):
+            raise ValueError("WEEKLY_DRAWDOWN_HALT_PCT may not exceed the immutable 5.00% ceiling")
+        if not (0.5 <= self.minimum_stop_atr <= 1.5):
+            raise ValueError("MINIMUM_STOP_ATR must remain between 0.50 and 1.50 ATR")
+        if not (1.5 <= self.maximum_stop_atr <= 4.0):
+            raise ValueError("MAXIMUM_STOP_ATR must remain between 1.50 and 4.00 ATR")
+        if self.minimum_stop_atr >= self.maximum_stop_atr:
+            raise ValueError("ATR stop sanity bounds must be strictly ordered")
+        if not (0 < self.maximum_adv_fraction <= 0.01):
+            raise ValueError("MAXIMUM_ADV_FRACTION may not exceed the immutable 1.00% ceiling")
+        if self.broker_min_quantity != 1:
+            raise ValueError("BROKER_MIN_QUANTITY is immutable at one whole share")
         if self.buy_score_threshold < 80 or not (self.buy_score_threshold <= self.preferred_score_threshold <= self.a_plus_score_threshold <= 100):
             raise ValueError("Score thresholds must be ordered and BUY_SCORE_THRESHOLD cannot be below 80")
         if not (0 <= self.borderline_score_threshold < self.buy_score_threshold):
@@ -266,14 +290,25 @@ def load_settings() -> SwingSettings:
         database_path=Path(os.getenv("SWING_DATABASE_PATH", str(ROOT / "data" / "adaptive_swing.db"))),
         do_not_trade_path=Path(os.getenv("DO_NOT_TRADE_PATH", str(ROOT / "config" / "do_not_trade.yaml"))),
         universe_path=Path(os.getenv("SWING_UNIVERSE_PATH", str(ROOT / "config" / "universe" / "us_liquid_2026-08-11.csv"))),
-        normal_risk_pct=_float("NORMAL_RISK_PCT", 0.005),
+        normal_risk_pct=_float("NORMAL_RISK_PCT", 0.0075),
         a_plus_risk_pct=_float("A_PLUS_RISK_PCT", 0.0075),
         absolute_max_risk_pct=_float("ABSOLUTE_MAX_RISK_PCT", 0.01),
         reduced_risk_pct=_float("REDUCED_RISK_PCT", 0.003),
         reduce_risk_drawdown_pct=_float("REDUCE_RISK_DRAWDOWN_PCT", 0.05),
         halt_drawdown_pct=_float("HALT_DRAWDOWN_PCT", 0.08),
         max_combined_open_risk_pct=_float("MAX_COMBINED_OPEN_RISK_PCT", 0.02),
+        max_sector_open_risk_pct=_float("MAX_SECTOR_OPEN_RISK_PCT", 0.015),
+        max_cluster_open_risk_pct=_float("MAX_CLUSTER_OPEN_RISK_PCT", 0.01),
         max_position_exposure_pct=_float("MAX_POSITION_EXPOSURE_PCT", 0.35),
+        max_open_positions=_int("MAX_OPEN_POSITIONS", 3),
+        max_new_positions_day=_int("MAX_NEW_POSITIONS_DAY", 1),
+        max_new_positions_week=_int("MAX_NEW_POSITIONS_WEEK", 3),
+        consecutive_loss_halt=_int("CONSECUTIVE_LOSS_HALT", 3),
+        weekly_drawdown_halt_pct=_float("WEEKLY_DRAWDOWN_HALT_PCT", 0.04),
+        minimum_stop_atr=_float("MINIMUM_STOP_ATR", 0.75),
+        maximum_stop_atr=_float("MAXIMUM_STOP_ATR", 3.0),
+        maximum_adv_fraction=_float("MAXIMUM_ADV_FRACTION", 0.001),
+        broker_min_quantity=_int("BROKER_MIN_QUANTITY", 1),
         minimum_rr=_float("MINIMUM_RR", 2.0),
         exceptional_minimum_rr=_float("EXCEPTIONAL_MINIMUM_RR", 1.5),
         buy_score_threshold=_float("BUY_SCORE_THRESHOLD", 80.0),

@@ -5,14 +5,21 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid4, uuid5
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
-from zoneinfo import ZoneInfo
 
 from .brokers.base import BrokerProvider
 from .config import SwingSettings
 from .database import SwingDatabase
-from .models import BrokerOrder, OrderIntent, PortfolioRiskState, RiskDecision, SwingCandidate, TradeProposal
+from .models import (
+    BrokerOrder,
+    OrderIntent,
+    PortfolioRiskState,
+    RiskDecision,
+    SwingCandidate,
+    TradeProposal,
+)
 from .reconciliation import BrokerReconciler
 from .risk import SwingRiskManager
 
@@ -52,14 +59,15 @@ class SwingExecutionService:
         drawdown = max(0.0, (equity_high - account.equity) / equity_high) if equity_high else 0.0
         now_et = datetime.now(ZoneInfo("America/New_York"))
         day_start = now_et.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
-        week_start = (
-            now_et.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now_et.weekday())
-        ).astimezone(timezone.utc).isoformat()
+        week_start = (now_et.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now_et.weekday())).astimezone(timezone.utc).isoformat()
         open_trades = self.database.open_trades()
         planned_open_risk = sum(float(trade.get("planned_dollar_risk") or 0) for trade in open_trades)
         self.database.record_equity_snapshot(
-            equity=account.equity, cash=account.cash, buying_power=account.buying_power,
-            drawdown_pct=drawdown, execution_mode=self.settings.execution_mode,
+            equity=account.equity,
+            cash=account.cash,
+            buying_power=account.buying_power,
+            drawdown_pct=drawdown,
+            execution_mode=self.settings.execution_mode,
         )
         return PortfolioRiskState(
             account=account,
@@ -90,9 +98,16 @@ class SwingExecutionService:
                     intent_id,
                 )
                 self.database.record_execution_event(
-                    intent_id=intent_id, decision_id=proposal.decision_id, trade_id=None, broker_order_id=None,
-                    ticker=proposal.ticker, side="buy", quantity=0, event_type="RECONCILIATION_REJECTED",
-                    status="REJECTED", payload=reconciliation.model_dump(mode="json"),
+                    intent_id=intent_id,
+                    decision_id=proposal.decision_id,
+                    trade_id=None,
+                    broker_order_id=None,
+                    ticker=proposal.ticker,
+                    side="buy",
+                    quantity=0,
+                    event_type="RECONCILIATION_REJECTED",
+                    status="REJECTED",
+                    payload=reconciliation.model_dump(mode="json"),
                 )
                 return ExecutionResult(status="REJECTED", intent_id=intent_id, risk=risk, message=risk.reason)
         try:
@@ -106,8 +121,15 @@ class SwingExecutionService:
         risk = self.risk_manager.validate_entry(proposal, candidate, quote, portfolio, intent_id, asset=asset)
         if not risk.approved:
             self.database.record_execution_event(
-                intent_id=intent_id, decision_id=proposal.decision_id, trade_id=None, broker_order_id=None,
-                ticker=proposal.ticker, side="buy", quantity=0, event_type="RISK_REJECTED", status="REJECTED",
+                intent_id=intent_id,
+                decision_id=proposal.decision_id,
+                trade_id=None,
+                broker_order_id=None,
+                ticker=proposal.ticker,
+                side="buy",
+                quantity=0,
+                event_type="RISK_REJECTED",
+                status="REJECTED",
                 payload=risk.model_dump(mode="json"),
             )
             if risk.rule == "drawdown_halt":
@@ -120,8 +142,8 @@ class SwingExecutionService:
             ticker=proposal.ticker,
             quantity=risk.quantity,
             limit_price=quote.last,
-            stop_price=proposal.stop,
-            target_price=proposal.target,
+            stop_price=risk.authoritative_stop or candidate.structural_invalidation,
+            target_price=candidate.resistance,
             strategy_version=proposal.strategy_version,
         )
         try:
@@ -132,12 +154,23 @@ class SwingExecutionService:
             return self._broker_rejection(intent, risk, "BROKER_REVIEW_REJECTED", str(review.get("reason", "broker rejected review")), review)
 
         self.database.record_execution_event(
-            intent_id=intent_id, decision_id=proposal.decision_id, trade_id=None, broker_order_id=None,
-            ticker=proposal.ticker, side="buy", quantity=risk.quantity, event_type="ORDER_REVIEWED", status="APPROVED", payload=review,
+            intent_id=intent_id,
+            decision_id=proposal.decision_id,
+            trade_id=None,
+            broker_order_id=None,
+            ticker=proposal.ticker,
+            side="buy",
+            quantity=risk.quantity,
+            event_type="ORDER_REVIEWED",
+            status="APPROVED",
+            payload=review,
         )
         if dry_run:
             return ExecutionResult(
-                status="DRY_RUN_APPROVED", intent_id=intent_id, risk=risk, broker_review=review,
+                status="DRY_RUN_APPROVED",
+                intent_id=intent_id,
+                risk=risk,
+                broker_review=review,
                 message="Broker review and deterministic risk validation passed; no order was sent",
             )
         if not self.settings.trading_enabled:
@@ -145,15 +178,20 @@ class SwingExecutionService:
             return ExecutionResult(status="REJECTED", intent_id=intent_id, risk=rejected, broker_review=review, message=rejected.reason)
         trade_id = str(uuid4())
         draft = self._trade_values(
-            trade_id=trade_id, proposal=proposal, candidate=candidate, intent=intent, risk=risk,
-            entry_datetime=intent.created_at, entry_price=quote.last, shares=0,
-            status="SUBMITTED", broker_order_id=None,
+            trade_id=trade_id,
+            proposal=proposal,
+            candidate=candidate,
+            intent=intent,
+            risk=risk,
+            entry_datetime=intent.created_at,
+            entry_price=quote.last,
+            shares=0,
+            status="SUBMITTED",
+            broker_order_id=None,
         )
         now_et = datetime.now(ZoneInfo("America/New_York"))
         day_start = now_et.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
-        week_start = (
-            now_et.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now_et.weekday())
-        ).astimezone(timezone.utc).isoformat()
+        week_start = (now_et.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now_et.weekday())).astimezone(timezone.utc).isoformat()
         reserved, rule, message = self.database.reserve_entry_admission(
             intent_id=intent_id,
             decision_id=proposal.decision_id,
@@ -165,6 +203,7 @@ class SwingExecutionService:
                 "trade": draft,
                 "proposal": proposal.model_dump(mode="json"),
                 "candidate": candidate.model_dump(mode="json"),
+                "cluster": self.risk_manager.clusters.get(proposal.ticker.upper()),
             },
             day_start_iso=day_start,
             week_start_iso=week_start,
@@ -173,6 +212,11 @@ class SwingExecutionService:
             max_day=self.settings.max_new_positions_day,
             max_week=self.settings.max_new_positions_week,
             max_open_risk_pct=self.settings.max_combined_open_risk_pct,
+            sector=candidate.sector,
+            cluster=self.risk_manager.clusters[proposal.ticker.upper()],
+            cluster_by_ticker=self.risk_manager.clusters,
+            max_sector_risk_pct=self.settings.max_sector_open_risk_pct,
+            max_cluster_risk_pct=self.settings.max_cluster_open_risk_pct,
         )
         if not reserved:
             rejected = self.risk_manager.reject(rule or "admission_rejected", message, proposal, intent_id)
@@ -185,12 +229,22 @@ class SwingExecutionService:
             self.database.update_admission(intent_id, "UNKNOWN")
             self.database.set_state("reconciliation_halt", True, "execution_unknown_outcome")
             self.database.record_execution_event(
-                intent_id=intent_id, decision_id=proposal.decision_id, trade_id=None, broker_order_id=None,
-                ticker=proposal.ticker, side="buy", quantity=risk.quantity, event_type="BROKER_ERROR",
-                status="UNKNOWN_REQUIRES_RECONCILIATION", payload={"error": str(exc)},
+                intent_id=intent_id,
+                decision_id=proposal.decision_id,
+                trade_id=None,
+                broker_order_id=None,
+                ticker=proposal.ticker,
+                side="buy",
+                quantity=risk.quantity,
+                event_type="BROKER_ERROR",
+                status="UNKNOWN_REQUIRES_RECONCILIATION",
+                payload={"error": str(exc)},
             )
             return ExecutionResult(
-                status="UNKNOWN_REQUIRES_RECONCILIATION", intent_id=intent_id, risk=risk, broker_review=review,
+                status="UNKNOWN_REQUIRES_RECONCILIATION",
+                intent_id=intent_id,
+                risk=risk,
+                broker_review=review,
                 message="Broker call failed after intent reservation; reconcile before any retry",
             )
 
@@ -198,39 +252,74 @@ class SwingExecutionService:
         if broker_status in {"rejected", "canceled", "cancelled", "expired", "stopped", "suspended"} and order.filled_quantity <= 0:
             admission_status = "REJECTED" if broker_status == "rejected" else "CANCELED"
             self.database.update_admission(
-                intent_id, admission_status, broker_order_id=order.broker_order_id,
+                intent_id,
+                admission_status,
+                broker_order_id=order.broker_order_id,
             )
             self.database.record_execution_event(
-                intent_id=intent_id, decision_id=proposal.decision_id, trade_id=None,
-                broker_order_id=order.broker_order_id, ticker=proposal.ticker, side="buy", quantity=risk.quantity,
-                event_type="ORDER_TERMINAL", status=broker_status, payload=order.model_dump(mode="json"),
+                intent_id=intent_id,
+                decision_id=proposal.decision_id,
+                trade_id=None,
+                broker_order_id=order.broker_order_id,
+                ticker=proposal.ticker,
+                side="buy",
+                quantity=risk.quantity,
+                event_type="ORDER_TERMINAL",
+                status=broker_status,
+                payload=order.model_dump(mode="json"),
             )
             return ExecutionResult(
-                status=admission_status, intent_id=intent_id, risk=risk, broker_review=review,
-                broker_order=order, message=f"Broker returned terminal status {broker_status}; no trade was opened",
+                status=admission_status,
+                intent_id=intent_id,
+                risk=risk,
+                broker_review=review,
+                broker_order=order,
+                message=f"Broker returned terminal status {broker_status}; no trade was opened",
             )
         accepted_statuses = {
-            "accepted", "accepted_for_bidding", "new", "pending_new", "partially_filled", "partial_fill",
-            "filled", "held", "pending_cancel", "pending_replace", "replaced",
+            "accepted",
+            "accepted_for_bidding",
+            "new",
+            "pending_new",
+            "partially_filled",
+            "partial_fill",
+            "filled",
+            "held",
+            "pending_cancel",
+            "pending_replace",
+            "replaced",
         }
         if broker_status not in accepted_statuses:
             self.database.update_admission(intent_id, "UNKNOWN", broker_order_id=order.broker_order_id)
             self.database.set_state("reconciliation_halt", True, "unexpected_broker_status")
             self.database.record_execution_event(
-                intent_id=intent_id, decision_id=proposal.decision_id, trade_id=None,
-                broker_order_id=order.broker_order_id, ticker=proposal.ticker, side="buy", quantity=risk.quantity,
-                event_type="UNEXPECTED_BROKER_STATUS", status=broker_status, payload=order.model_dump(mode="json"),
+                intent_id=intent_id,
+                decision_id=proposal.decision_id,
+                trade_id=None,
+                broker_order_id=order.broker_order_id,
+                ticker=proposal.ticker,
+                side="buy",
+                quantity=risk.quantity,
+                event_type="UNEXPECTED_BROKER_STATUS",
+                status=broker_status,
+                payload=order.model_dump(mode="json"),
             )
             return ExecutionResult(
-                status="UNKNOWN_REQUIRES_RECONCILIATION", intent_id=intent_id, risk=risk,
-                broker_review=review, broker_order=order,
+                status="UNKNOWN_REQUIRES_RECONCILIATION",
+                intent_id=intent_id,
+                risk=risk,
+                broker_review=review,
+                broker_order=order,
                 message=f"Unexpected broker status {broker_status}; reconciliation is mandatory",
             )
 
         status = "PARTIALLY_FILLED" if broker_status in {"partially_filled", "partial_fill"} else "SUBMITTED"
         stored_trade = self._trade_values(
             trade_id=trade_id,
-            proposal=proposal, candidate=candidate, intent=intent, risk=risk,
+            proposal=proposal,
+            candidate=candidate,
+            intent=intent,
+            risk=risk,
             entry_datetime=order.submitted_at,
             entry_price=order.average_fill_price or quote.last,
             shares=order.filled_quantity,
@@ -240,34 +329,69 @@ class SwingExecutionService:
         try:
             self.database.add_trade(stored_trade)
             self.database.update_admission(
-                intent_id, "SUBMITTED", trade_id=trade_id, broker_order_id=order.broker_order_id,
+                intent_id,
+                "SUBMITTED",
+                trade_id=trade_id,
+                broker_order_id=order.broker_order_id,
             )
         except Exception as exc:
             self.database.update_admission(intent_id, "UNKNOWN", broker_order_id=order.broker_order_id)
             self.database.set_state("reconciliation_halt", True, "execution_persistence_failure")
             self.database.record_execution_event(
-                intent_id=intent_id, decision_id=proposal.decision_id, trade_id=None,
-                broker_order_id=order.broker_order_id, ticker=proposal.ticker, side="buy", quantity=risk.quantity,
-                event_type="PERSISTENCE_ERROR", status="UNKNOWN_REQUIRES_RECONCILIATION", payload={"error": str(exc)},
+                intent_id=intent_id,
+                decision_id=proposal.decision_id,
+                trade_id=None,
+                broker_order_id=order.broker_order_id,
+                ticker=proposal.ticker,
+                side="buy",
+                quantity=risk.quantity,
+                event_type="PERSISTENCE_ERROR",
+                status="UNKNOWN_REQUIRES_RECONCILIATION",
+                payload={"error": str(exc)},
             )
             return ExecutionResult(
-                status="UNKNOWN_REQUIRES_RECONCILIATION", intent_id=intent_id, risk=risk,
-                broker_review=review, broker_order=order, message="Broker accepted the call but persistence failed; reconciliation is mandatory",
+                status="UNKNOWN_REQUIRES_RECONCILIATION",
+                intent_id=intent_id,
+                risk=risk,
+                broker_review=review,
+                broker_order=order,
+                message="Broker accepted the call but persistence failed; reconciliation is mandatory",
             )
         self.database.record_execution_event(
-            intent_id=intent_id, decision_id=proposal.decision_id, trade_id=trade_id,
-            broker_order_id=order.broker_order_id, ticker=proposal.ticker, side="buy", quantity=risk.quantity,
-            event_type="ORDER_SUBMITTED", status=order.status, payload=order.model_dump(mode="json"),
+            intent_id=intent_id,
+            decision_id=proposal.decision_id,
+            trade_id=trade_id,
+            broker_order_id=order.broker_order_id,
+            ticker=proposal.ticker,
+            side="buy",
+            quantity=risk.quantity,
+            event_type="ORDER_SUBMITTED",
+            status=order.status,
+            payload=order.model_dump(mode="json"),
         )
         return ExecutionResult(
-            status=status, intent_id=intent_id, risk=risk, broker_review=review, broker_order=order,
-            trade_id=trade_id, message="Order submitted once and persisted for reconciliation",
+            status=status,
+            intent_id=intent_id,
+            risk=risk,
+            broker_review=review,
+            broker_order=order,
+            trade_id=trade_id,
+            message="Order submitted once and persisted for reconciliation",
         )
 
     def _trade_values(
-        self, *, trade_id: str, proposal: TradeProposal, candidate: SwingCandidate, intent: OrderIntent,
-        risk: RiskDecision, entry_datetime: datetime, entry_price: float, shares: float,
-        status: str, broker_order_id: str | None,
+        self,
+        *,
+        trade_id: str,
+        proposal: TradeProposal,
+        candidate: SwingCandidate,
+        intent: OrderIntent,
+        risk: RiskDecision,
+        entry_datetime: datetime,
+        entry_price: float,
+        shares: float,
+        status: str,
+        broker_order_id: str | None,
     ) -> dict:
         return {
             "trade_id": trade_id,
@@ -280,9 +404,9 @@ class SwingExecutionService:
             "strategy_version": proposal.strategy_version,
             "entry_datetime": entry_datetime.isoformat(),
             "entry_price": entry_price,
-            "initial_stop": proposal.stop,
-            "final_stop": proposal.stop,
-            "target": proposal.target,
+            "initial_stop": risk.authoritative_stop,
+            "final_stop": risk.authoritative_stop,
+            "target": candidate.resistance,
             "shares": shares,
             "position_value": shares * entry_price,
             "planned_dollar_risk": risk.planned_dollar_risk,
@@ -316,12 +440,24 @@ class SwingExecutionService:
         }
 
     def _broker_rejection(
-        self, intent: OrderIntent, risk: RiskDecision, event_type: str, message: str, payload: dict | None = None,
+        self,
+        intent: OrderIntent,
+        risk: RiskDecision,
+        event_type: str,
+        message: str,
+        payload: dict | None = None,
     ) -> ExecutionResult:
         self.database.record_execution_event(
-            intent_id=intent.intent_id, decision_id=intent.decision_id, trade_id=None, broker_order_id=None,
-            ticker=intent.ticker, side=intent.side, quantity=intent.quantity, event_type=event_type,
-            status="REJECTED", payload=payload or {"error": message},
+            intent_id=intent.intent_id,
+            decision_id=intent.decision_id,
+            trade_id=None,
+            broker_order_id=None,
+            ticker=intent.ticker,
+            side=intent.side,
+            quantity=intent.quantity,
+            event_type=event_type,
+            status="REJECTED",
+            payload=payload or {"error": message},
         )
         return ExecutionResult(status="REJECTED", intent_id=intent.intent_id, risk=risk, broker_review=payload, message=message)
 
@@ -330,13 +466,7 @@ class SwingExecutionService:
         report_dir.mkdir(parents=True, exist_ok=True)
         path = report_dir / f"DRAWDOWN_REVIEW_{datetime.now().date().isoformat()}.md"
         path.write_text(
-            "# Drawdown Review\n\n"
-            f"Generated: {datetime.now(timezone.utc).isoformat()}\n\n"
-            f"Reason: {reason}\n\n"
-            f"Equity: ${portfolio.account.equity:,.2f}\n\n"
-            f"Equity high: ${portfolio.equity_high:,.2f}\n\n"
-            f"Drawdown: {portfolio.drawdown_pct:.2%}\n\n"
-            "New trading remains latched off until an explicit human review is recorded. Existing positions may only be managed or exited.\n",
+            "# Drawdown Review\n\n" f"Generated: {datetime.now(timezone.utc).isoformat()}\n\n" f"Reason: {reason}\n\n" f"Equity: ${portfolio.account.equity:,.2f}\n\n" f"Equity high: ${portfolio.equity_high:,.2f}\n\n" f"Drawdown: {portfolio.drawdown_pct:.2%}\n\n" "New trading remains latched off until an explicit human review is recorded. Existing positions may only be managed or exited.\n",
             encoding="utf-8",
         )
         return path

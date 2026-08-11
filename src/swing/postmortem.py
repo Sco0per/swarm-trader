@@ -161,7 +161,7 @@ class PostmortemEngine:
         )
         losses = self.database.consecutive_losses()
         if losses >= self.consecutive_loss_halt:
-            self.database.set_state("loss_streak_halt", True, "automatic_postmortem")
+            self.database.activate_halt("loss_streak_halt", f"Loss streak reached {losses}", "automatic_postmortem")
             self.report_dir.mkdir(parents=True, exist_ok=True)
             report = self.report_dir / f"LOSS_STREAK_REVIEW_{datetime.now(timezone.utc).date().isoformat()}.md"
             report.write_text(

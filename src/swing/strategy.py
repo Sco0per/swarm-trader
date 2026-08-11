@@ -25,7 +25,7 @@ class ValidationResult:
     failed_conditions: tuple[str, ...]
     conditions: Mapping[str, bool]
     features: Mapping[str, float | int | str | bool | None]
-    provisional_stop: float | None = None
+    invalidation_level: float | None = None
     target: float | None = None
 
     @property
@@ -252,7 +252,6 @@ def validate_trend_pullback(
     pullback_distance = min(abs(context.price - context.ema_short), abs(context.price - context.ma_medium)) / context.atr
     recent_low = float(recent["low"].min())
     structural_support = max(recent_low - config.structural_break_atr * context.atr, context.ma_medium - config.structural_break_atr * context.atr)
-    # TODO(prompt-03): replace this provisional structural stop with the central stop authority.
     stop = min(structural_support, context.price - config.minimum_atr_pct * context.price)
     prior_high = float(context.frame["high"].iloc[-config.relative_strength_lookback : -1].max())
     target = prior_high + config.trend_target_atr_extension * context.atr
@@ -279,7 +278,7 @@ def validate_trend_pullback(
         recent_low=recent_low,
         prior_high=prior_high,
         volume_contracting=context.volume_ratio <= config.contraction_volume_ratio,
-        provisional_stop=stop,
+        structural_invalidation=stop,
         target=target,
     )
     return _result(SetupType.TREND_PULLBACK, conditions, features, stop, target)
@@ -320,7 +319,6 @@ def validate_breakout_retest(
         breakout_volume_ratio = float(context.frame["volume"].iloc[full_position] / baseline) if baseline > 0 else 0.0
     extension_atr = (context.price - resistance) / context.atr
     retest_low = float(context.frame["low"].tail(config.trend_slope_lookback).min())
-    # TODO(prompt-03): replace this provisional structural stop with the central stop authority.
     stop = min(resistance * (1 - config.retest_hold_tolerance_pct), retest_low) - config.structural_break_atr * context.atr
     target = resistance + config.measured_move_multiple * consolidation_range
     reward_risk = (target - context.price) / (context.price - stop) if stop < context.price < target else 0.0
@@ -348,7 +346,7 @@ def validate_breakout_retest(
         breakout_volume_ratio=breakout_volume_ratio,
         retest_low=retest_low,
         extension_atr=extension_atr,
-        provisional_stop=stop,
+        structural_invalidation=stop,
         target=target,
     )
     return _result(SetupType.BREAKOUT_RETEST, conditions, features, stop, target)
@@ -381,7 +379,6 @@ def validate_relative_strength_continuation(
     preceding_volume = float(context.frame["volume"].iloc[-config.rs_consolidation_sessions - config.short_ema_period : -config.rs_consolidation_sessions].mean())
     consolidation_volume = float(consolidation["volume"].mean())
     contraction_ratio = consolidation_volume / preceding_volume if preceding_volume > 0 else float("inf")
-    # TODO(prompt-03): replace this provisional structural stop with the central stop authority.
     stop = consolidation_low - config.structural_break_atr * context.atr
     target = consolidation_high + config.measured_move_multiple * (consolidation_high - consolidation_low)
     reward_risk = (target - context.price) / (context.price - stop) if stop < context.price < target else 0.0
@@ -409,7 +406,7 @@ def validate_relative_strength_continuation(
         consolidation_low=consolidation_low,
         consolidation_range_atr=consolidation_range_atr,
         contraction_volume_ratio=contraction_ratio,
-        provisional_stop=stop,
+        structural_invalidation=stop,
         target=target,
         market_regime=market_regime.value,
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -105,7 +106,10 @@ def main() -> int:
     elif args.command == "report":
         print(reports.generate(args.type))
     elif args.command == "kill-switch":
-        database.set_state("kill_switch", args.state == "on", args.approved_by)
+        if args.state == "on":
+            database.activate_halt("kill_switch", "Human activated global kill switch", args.approved_by)
+        else:
+            database.set_state("kill_switch", False, args.approved_by)
         print(f"kill_switch={args.state}")
     elif args.command == "clear-drawdown-halt":
         database.set_state("drawdown_halt", False, args.approved_by)
@@ -168,6 +172,7 @@ def main() -> int:
     elif args.command == "run":
         if settings.execution_mode != "paper":
             raise ValueError("run currently supports EXECUTION_MODE=paper only")
+        cycle_started_at = datetime.now(timezone.utc).isoformat()
         broker = AlpacaPaperProvider(os.getenv("ALPACA_API_KEY", ""), os.getenv("ALPACA_API_SECRET", ""))
         inputs = load_scan_inputs(database=database, universe_path=settings.universe_path)
         scanner = DeterministicSwingScanner(settings)
@@ -198,6 +203,7 @@ def main() -> int:
                     "setup_type": proposal.setup_type.value,
                     "status": result.status,
                     "message": result.message,
+                    "reason_code": result.risk.reason_code,
                     "trade_id": result.trade_id,
                 }
             )
@@ -209,7 +215,10 @@ def main() -> int:
                     "llm_backend_configured": backend is not None,
                     "candidates_found": len(candidates),
                     "proposals_generated": len(proposals),
-                    "funnel": scanner.last_report.as_dict() if hasattr(scanner, "last_report") else None,
+                    "funnel": {
+                        **(scanner.last_report.as_dict() if hasattr(scanner, "last_report") else {}),
+                        "risk_sizing": database.sizing_rejection_summary(cycle_started_at),
+                    },
                     "decisions": decisions,
                 },
                 indent=2,

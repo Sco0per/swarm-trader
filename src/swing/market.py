@@ -45,7 +45,8 @@ class UniverseAsset:
     existing_holding: bool = False
     is_leveraged_or_inverse: bool = False
     earnings_trading_days: int | None = None
-    prohibited_event_risk: bool | None = False
+    earnings_data_status: str = "unavailable"
+    prohibited_event_risk: bool | None = None
     bid: float | None = None
     ask: float | None = None
     quote_timestamp: datetime | None = None
@@ -451,9 +452,12 @@ class DeterministicSwingScanner:
             ma50=ma50,
             ma200=ma200,
             volume_ratio=volume_ratio,
-            support=float(validation.provisional_stop),
+            support=float(validation.invalidation_level),
             resistance=float(validation.target),
+            structural_invalidation=float(validation.invalidation_level),
+            major_event_status=("unknown" if asset.prohibited_event_risk is None else "blocked" if asset.prohibited_event_risk else "clear"),
             earnings_trading_days=asset.earnings_trading_days,
+            earnings_data_status=asset.earnings_data_status,
             is_etf=asset.is_etf,
             is_leveraged_or_inverse=asset.is_leveraged_or_inverse,
             is_halted=bool(asset.is_halted),

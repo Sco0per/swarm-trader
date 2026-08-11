@@ -35,7 +35,7 @@ def _turso_serverless():
     return turso_serverless
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 DDL = """
@@ -328,6 +328,37 @@ CREATE TABLE IF NOT EXISTS earnings_cache (
     trading_days INTEGER,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS risk_snapshots (
+    snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    observed_at TEXT NOT NULL,
+    account_equity REAL NOT NULL,
+    total_open_risk REAL NOT NULL,
+    open_risk_percent REAL NOT NULL,
+    risk_by_sector_json TEXT NOT NULL,
+    risk_by_cluster_json TEXT NOT NULL,
+    risk_by_position_json TEXT NOT NULL,
+    source TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS risk_rejections (
+    rejection_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    rule TEXT NOT NULL,
+    ticker TEXT,
+    decision_id TEXT,
+    intent_id TEXT,
+    candidate_json TEXT NOT NULL,
+    computed_values_json TEXT NOT NULL,
+    reason TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS halt_events (
+    halt_event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at TEXT NOT NULL,
+    halt_key TEXT NOT NULL,
+    active INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    source TEXT NOT NULL
+);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_submitted_intent
     ON execution_events(intent_id) WHERE event_type = 'ORDER_SUBMITTED';
 CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_reserved_intent
@@ -409,6 +440,10 @@ class SwingDatabase:
                 "INSERT OR IGNORE INTO system_state(key, value_json, updated_at, updated_by) VALUES('reconciliation_halt', 'false', ?, 'system')",
                 (_now(),),
             )
+            connection.execute(
+                "INSERT OR IGNORE INTO system_state(key, value_json, updated_at, updated_by) VALUES('weekly_drawdown_halt', 'false', ?, 'system')",
+                (_now(),),
+            )
 
     def set_state(self, key: str, value: Any, updated_by: str) -> None:
         with self.connect() as connection:
@@ -417,6 +452,21 @@ class SwingDatabase:
                    ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,
                    updated_at=excluded.updated_at, updated_by=excluded.updated_by""",
                 (key, _json(value), _now(), updated_by),
+            )
+
+    def activate_halt(self, key: str, reason: str, source: str) -> None:
+        if key not in {"kill_switch", "drawdown_halt", "weekly_drawdown_halt", "loss_streak_halt", "reconciliation_halt"}:
+            raise ValueError(f"Unsupported halt key: {key}")
+        now = _now()
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO system_state(key,value_json,updated_at,updated_by) VALUES(?, 'true', ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value_json='true',updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
+                (key, now, source),
+            )
+            connection.execute(
+                "INSERT INTO halt_events(occurred_at,halt_key,active,reason,source) VALUES(?,?,1,?,?)",
+                (now, key, reason, source),
             )
 
     def get_state(self, key: str, default: Any = None) -> Any:
@@ -470,19 +520,40 @@ class SwingDatabase:
                      data_source=excluded.data_source, retrieved_at=excluded.retrieved_at,
                      market_timestamp=excluded.market_timestamp""",
                 (
-                    candidate.candidate_id, _now(), candidate.ticker, candidate.setup_type.value, candidate.score,
-                    _json(candidate.score_components), disposition, rejection_reason, candidate.market_regime.value,
-                    candidate.sector, candidate.sector_etf, _json(payload), candidate.data.source,
+                    candidate.candidate_id,
+                    _now(),
+                    candidate.ticker,
+                    candidate.setup_type.value,
+                    candidate.score,
+                    _json(candidate.score_components),
+                    disposition,
+                    rejection_reason,
+                    candidate.market_regime.value,
+                    candidate.sector,
+                    candidate.sector_etf,
+                    _json(payload),
+                    candidate.data.source,
                     candidate.data.retrieved_at.isoformat(),
                     candidate.data.market_timestamp.isoformat() if candidate.data.market_timestamp else None,
                 ),
             )
 
     def record_agent_decision(
-        self, agent_decision_id: str, role: str, schema_version: str, payload: dict[str, Any],
-        validation_status: str, *, candidate_id: str | None = None, trade_id: str | None = None,
-        model_name: str | None = None, decision: str | None = None, validation_error: str | None = None,
-        prompt_tokens: int | None = None, completion_tokens: int | None = None, estimated_cost: float | None = None,
+        self,
+        agent_decision_id: str,
+        role: str,
+        schema_version: str,
+        payload: dict[str, Any],
+        validation_status: str,
+        *,
+        candidate_id: str | None = None,
+        trade_id: str | None = None,
+        model_name: str | None = None,
+        decision: str | None = None,
+        validation_error: str | None = None,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        estimated_cost: float | None = None,
     ) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -491,15 +562,34 @@ class SwingDatabase:
                     validation_status,validation_error,prompt_tokens,completion_tokens,estimated_cost,created_at)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    agent_decision_id, candidate_id, trade_id, role, model_name, schema_version, decision,
-                    _json(payload), validation_status, validation_error, prompt_tokens, completion_tokens,
-                    estimated_cost, _now(),
+                    agent_decision_id,
+                    candidate_id,
+                    trade_id,
+                    role,
+                    model_name,
+                    schema_version,
+                    decision,
+                    _json(payload),
+                    validation_status,
+                    validation_error,
+                    prompt_tokens,
+                    completion_tokens,
+                    estimated_cost,
+                    _now(),
                 ),
             )
 
     def record_violation(
-        self, rule: str, details: str, *, ticker: str | None = None, decision_id: str | None = None,
-        intent_id: str | None = None, trade_id: str | None = None, severity: str = "MAJOR", blocked: bool = True,
+        self,
+        rule: str,
+        details: str,
+        *,
+        ticker: str | None = None,
+        decision_id: str | None = None,
+        intent_id: str | None = None,
+        trade_id: str | None = None,
+        severity: str = "MAJOR",
+        blocked: bool = True,
     ) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -509,9 +599,94 @@ class SwingDatabase:
                 (_now(), trade_id, decision_id, intent_id, ticker, rule, severity, int(blocked), details),
             )
 
+    def record_risk_rejection(
+        self,
+        *,
+        reason_code: str,
+        rule: str,
+        reason: str,
+        ticker: str | None,
+        decision_id: str | None,
+        intent_id: str | None,
+        candidate: dict[str, Any] | None,
+        computed_values: dict[str, Any] | None,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO risk_rejections
+                   (occurred_at,reason_code,rule,ticker,decision_id,intent_id,candidate_json,computed_values_json,reason)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    _now(),
+                    reason_code,
+                    rule,
+                    ticker,
+                    decision_id,
+                    intent_id,
+                    _json(candidate or {}),
+                    _json(computed_values or {}),
+                    reason,
+                ),
+            )
+
+    def record_risk_snapshot(
+        self,
+        *,
+        account_equity: float,
+        total_open_risk: float,
+        risk_by_sector: dict[str, float],
+        risk_by_cluster: dict[str, float],
+        risk_by_position: dict[str, float],
+        source: str = "risk_engine",
+    ) -> None:
+        open_risk_percent = total_open_risk / account_equity if account_equity > 0 else 0.0
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO risk_snapshots
+                   (observed_at,account_equity,total_open_risk,open_risk_percent,risk_by_sector_json,
+                    risk_by_cluster_json,risk_by_position_json,source)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    _now(),
+                    account_equity,
+                    total_open_risk,
+                    open_risk_percent,
+                    _json(risk_by_sector),
+                    _json(risk_by_cluster),
+                    _json(risk_by_position),
+                    source,
+                ),
+            )
+
+    def sizing_rejection_summary(self, since_iso: str) -> dict[str, Any]:
+        rows = self.rows(
+            """SELECT reason_code,ticker,computed_values_json FROM risk_rejections
+               WHERE occurred_at >= ? AND reason_code IN ('REJECT_QTY_ZERO','REJECT_INSUFFICIENT_CASH')
+               ORDER BY occurred_at""",
+            (since_iso,),
+        )
+        grouped: dict[str, list[dict[str, Any]]] = {"REJECT_QTY_ZERO": [], "REJECT_INSUFFICIENT_CASH": []}
+        for row in rows:
+            values = json.loads(row["computed_values_json"])
+            grouped[row["reason_code"]].append({"ticker": row["ticker"], "price": values.get("price"), "risk_per_share": values.get("risk_per_share")})
+        return {
+            "quantity_rounding_to_zero": {"count": len(grouped["REJECT_QTY_ZERO"]), "candidates": grouped["REJECT_QTY_ZERO"]},
+            "insufficient_cash": {"count": len(grouped["REJECT_INSUFFICIENT_CASH"]), "candidates": grouped["REJECT_INSUFFICIENT_CASH"]},
+        }
+
     def record_execution_event(
-        self, *, intent_id: str, decision_id: str | None, trade_id: str | None, broker_order_id: str | None,
-        ticker: str, side: str, quantity: float, event_type: str, status: str, payload: dict[str, Any],
+        self,
+        *,
+        intent_id: str,
+        decision_id: str | None,
+        trade_id: str | None,
+        broker_order_id: str | None,
+        ticker: str,
+        side: str,
+        quantity: float,
+        event_type: str,
+        status: str,
+        payload: dict[str, Any],
     ) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -523,19 +698,32 @@ class SwingDatabase:
 
     def intent_was_submitted(self, intent_id: str) -> bool:
         with self.connect() as connection:
-            row = connection.execute(
-                "SELECT 1 FROM execution_events WHERE intent_id=? AND event_type IN ('ORDER_RESERVED','ORDER_SUBMITTED') LIMIT 1", (intent_id,)
-            ).fetchone()
+            row = connection.execute("SELECT 1 FROM execution_events WHERE intent_id=? AND event_type IN ('ORDER_RESERVED','ORDER_SUBMITTED') LIMIT 1", (intent_id,)).fetchone()
         return row is not None
 
     def reserve_intent(
-        self, *, intent_id: str, decision_id: str, ticker: str, side: str, quantity: float, payload: dict[str, Any],
+        self,
+        *,
+        intent_id: str,
+        decision_id: str,
+        ticker: str,
+        side: str,
+        quantity: float,
+        payload: dict[str, Any],
     ) -> bool:
         """Atomically reserve an intent before the network call; retries fail closed."""
         try:
             self.record_execution_event(
-                intent_id=intent_id, decision_id=decision_id, trade_id=None, broker_order_id=None,
-                ticker=ticker, side=side, quantity=quantity, event_type="ORDER_RESERVED", status="PENDING", payload=payload,
+                intent_id=intent_id,
+                decision_id=decision_id,
+                trade_id=None,
+                broker_order_id=None,
+                ticker=ticker,
+                side=side,
+                quantity=quantity,
+                event_type="ORDER_RESERVED",
+                status="PENDING",
+                payload=payload,
             )
             return True
         except self.integrity_errors:
@@ -557,6 +745,11 @@ class SwingDatabase:
         max_day: int,
         max_week: int,
         max_open_risk_pct: float,
+        sector: str,
+        cluster: str,
+        cluster_by_ticker: dict[str, str],
+        max_sector_risk_pct: float,
+        max_cluster_risk_pct: float,
     ) -> tuple[bool, str | None, str]:
         """Serialize final admission under a SQLite write lock.
 
@@ -569,26 +762,28 @@ class SwingDatabase:
             if connection.execute("SELECT 1 FROM entry_admissions WHERE intent_id=?", (intent_id,)).fetchone():
                 return False, "duplicate_intent", "Intent already has an admission record"
             active = connection.execute(
-                """SELECT ticker, planned_dollar_risk, created_at FROM entry_admissions
+                """SELECT ticker, planned_dollar_risk, created_at, payload_json FROM entry_admissions
                    WHERE trade_id IS NULL AND status IN ('PENDING','UNKNOWN')"""
             ).fetchall()
-            today_trades = int(connection.execute(
-                "SELECT COUNT(*) FROM trades WHERE entry_datetime >= ? AND status NOT IN ('REJECTED','CANCELED')",
-                (day_start_iso,),
-            ).fetchone()[0])
-            week_trades = int(connection.execute(
-                "SELECT COUNT(*) FROM trades WHERE entry_datetime >= ? AND status NOT IN ('REJECTED','CANCELED')",
-                (week_start_iso,),
-            ).fetchone()[0])
+            today_trades = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM trades WHERE entry_datetime >= ? AND status NOT IN ('REJECTED','CANCELED')",
+                    (day_start_iso,),
+                ).fetchone()[0]
+            )
+            week_trades = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM trades WHERE entry_datetime >= ? AND status NOT IN ('REJECTED','CANCELED')",
+                    (week_start_iso,),
+                ).fetchone()[0]
+            )
             pending_today = sum(1 for row in active if row["created_at"] >= day_start_iso)
             pending_week = sum(1 for row in active if row["created_at"] >= week_start_iso)
             if today_trades + pending_today >= max_day:
                 return False, "daily_entry_limit", "Serialized daily entry limit reached"
             if week_trades + pending_week >= max_week:
                 return False, "weekly_entry_limit", "Serialized weekly entry limit reached"
-            open_rows = connection.execute(
-                "SELECT ticker, planned_dollar_risk FROM trades WHERE status IN ('SUBMITTED','OPEN','PARTIALLY_FILLED')"
-            ).fetchall()
+            open_rows = connection.execute("SELECT ticker, planned_dollar_risk FROM trades WHERE status IN ('SUBMITTED','OPEN','PARTIALLY_FILLED')").fetchall()
             estimated_symbols = set(broker_position_symbols)
             estimated_symbols.update(str(row["ticker"]).upper() for row in open_rows)
             estimated_symbols.update(str(row["ticker"]).upper() for row in active)
@@ -598,6 +793,27 @@ class SwingDatabase:
             reserved_risk = sum(float(row["planned_dollar_risk"] or 0) for row in active)
             if existing_open_risk + reserved_risk + planned_dollar_risk > account_equity * max_open_risk_pct + 1e-9:
                 return False, "max_combined_open_risk", "Serialized combined open-risk limit reached"
+            open_context = connection.execute("SELECT ticker,sector,planned_dollar_risk FROM trades WHERE status IN ('SUBMITTED','OPEN','PARTIALLY_FILLED')").fetchall()
+            existing_sector_risk = sum(float(row["planned_dollar_risk"] or 0) for row in open_context if str(row["sector"] or "UNKNOWN") == sector)
+            existing_cluster_risk = 0.0
+            for row in open_context:
+                if cluster_by_ticker.get(str(row["ticker"]).upper()) == cluster:
+                    existing_cluster_risk += float(row["planned_dollar_risk"] or 0)
+            for row in active:
+                try:
+                    active_payload = json.loads(row["payload_json"]) if "payload_json" in row.keys() else {}
+                except (TypeError, ValueError):
+                    return False, "broker_mismatch", "Malformed active-admission risk context"
+                active_candidate = active_payload.get("candidate", {})
+                active_risk = float(row["planned_dollar_risk"] or 0)
+                if str(active_candidate.get("sector") or "UNKNOWN") == sector:
+                    existing_sector_risk += active_risk
+                if active_payload.get("cluster") == cluster:
+                    existing_cluster_risk += active_risk
+            if existing_sector_risk + planned_dollar_risk > account_equity * max_sector_risk_pct + 1e-9:
+                return False, "sector_risk", "Serialized sector open-risk limit reached"
+            if existing_cluster_risk + planned_dollar_risk > account_equity * max_cluster_risk_pct + 1e-9:
+                return False, "cluster_risk", "Serialized cluster open-risk limit reached"
             connection.execute(
                 """INSERT INTO entry_admissions
                    (intent_id,decision_id,ticker,status,planned_dollar_risk,account_equity,payload_json,created_at,updated_at)
@@ -608,13 +824,17 @@ class SwingDatabase:
                 """INSERT INTO execution_events
                    (occurred_at,intent_id,decision_id,trade_id,broker_order_id,ticker,side,quantity,event_type,status,payload_json)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                (now, intent_id, decision_id, None, None, ticker.upper(), "buy", payload.get("intent", {}).get("quantity", 0),
-                 "ORDER_RESERVED", "PENDING", _json(payload)),
+                (now, intent_id, decision_id, None, None, ticker.upper(), "buy", payload.get("intent", {}).get("quantity", 0), "ORDER_RESERVED", "PENDING", _json(payload)),
             )
         return True, None, "Entry admission reserved"
 
     def update_admission(
-        self, intent_id: str, status: str, *, trade_id: str | None = None, broker_order_id: str | None = None,
+        self,
+        intent_id: str,
+        status: str,
+        *,
+        trade_id: str | None = None,
+        broker_order_id: str | None = None,
     ) -> None:
         if status not in {"PENDING", "SUBMITTED", "UNKNOWN", "RECONCILED", "CANCELED", "REJECTED"}:
             raise ValueError("Invalid admission status")
@@ -627,16 +847,27 @@ class SwingDatabase:
 
     def active_admissions(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM entry_admissions WHERE status IN ('PENDING','SUBMITTED','UNKNOWN') ORDER BY created_at"
-            ).fetchall()
+            rows = connection.execute("SELECT * FROM entry_admissions WHERE status IN ('PENDING','SUBMITTED','UNKNOWN') ORDER BY created_at").fetchall()
         return [dict(row) for row in rows]
 
     def add_trade(self, values: dict[str, Any]) -> None:
         required = {
-            "trade_id", "decision_id", "ticker", "setup_type", "status", "strategy_version", "initial_stop",
-            "final_stop", "target", "shares", "planned_dollar_risk", "planned_account_risk_pct", "planned_rr",
-            "market_regime", "candidate_score", "risk_validation_result",
+            "trade_id",
+            "decision_id",
+            "ticker",
+            "setup_type",
+            "status",
+            "strategy_version",
+            "initial_stop",
+            "final_stop",
+            "target",
+            "shares",
+            "planned_dollar_risk",
+            "planned_account_risk_pct",
+            "planned_rr",
+            "market_regime",
+            "candidate_score",
+            "risk_validation_result",
         }
         missing = sorted(required - values.keys())
         if missing:
@@ -662,8 +893,16 @@ class SwingDatabase:
             connection.execute(f"UPDATE trades SET {assignments} WHERE trade_id=?", (*params, trade_id))
 
     def record_trade_snapshot(
-        self, trade_id: str, *, price: float, stop: float, source: str, unrealized_pnl: float | None = None,
-        mfe: float | None = None, mae: float | None = None, payload: dict[str, Any] | None = None,
+        self,
+        trade_id: str,
+        *,
+        price: float,
+        stop: float,
+        source: str,
+        unrealized_pnl: float | None = None,
+        mfe: float | None = None,
+        mae: float | None = None,
+        payload: dict[str, Any] | None = None,
     ) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -675,9 +914,7 @@ class SwingDatabase:
 
     def trade_price_extremes(self, trade_id: str, fallback: float) -> tuple[float, float]:
         with self.connect() as connection:
-            row = connection.execute(
-                "SELECT MAX(price) AS high, MIN(price) AS low FROM trade_snapshots WHERE trade_id=?", (trade_id,)
-            ).fetchone()
+            row = connection.execute("SELECT MAX(price) AS high, MIN(price) AS low FROM trade_snapshots WHERE trade_id=?", (trade_id,)).fetchone()
         return (
             float(row["high"]) if row and row["high"] is not None else fallback,
             float(row["low"]) if row and row["low"] is not None else fallback,
@@ -700,16 +937,12 @@ class SwingDatabase:
 
     def new_position_count(self, start_iso: str) -> int:
         with self.connect() as connection:
-            row = connection.execute(
-                "SELECT COUNT(*) AS n FROM trades WHERE entry_datetime >= ? AND status NOT IN ('REJECTED','CANCELED')", (start_iso,)
-            ).fetchone()
+            row = connection.execute("SELECT COUNT(*) AS n FROM trades WHERE entry_datetime >= ? AND status NOT IN ('REJECTED','CANCELED')", (start_iso,)).fetchone()
         return int(row["n"])
 
     def consecutive_losses(self) -> int:
         with self.connect() as connection:
-            rows = connection.execute(
-                "SELECT realized_pnl FROM trades WHERE status='CLOSED' AND realized_pnl IS NOT NULL ORDER BY exit_datetime DESC LIMIT 100"
-            ).fetchall()
+            rows = connection.execute("SELECT realized_pnl FROM trades WHERE status='CLOSED' AND realized_pnl IS NOT NULL ORDER BY exit_datetime DESC LIMIT 100").fetchall()
         count = 0
         for row in rows:
             if float(row["realized_pnl"]) < 0:
@@ -734,8 +967,13 @@ class SwingDatabase:
                    (observed_at,equity,cash,buying_power,realized_pnl,unrealized_pnl,drawdown_pct,execution_mode)
                    VALUES(?,?,?,?,?,?,?,?)""",
                 (
-                    values.get("observed_at", _now()), values["equity"], values["cash"], values["buying_power"],
-                    values.get("realized_pnl"), values.get("unrealized_pnl"), values.get("drawdown_pct", 0),
+                    values.get("observed_at", _now()),
+                    values["equity"],
+                    values["cash"],
+                    values["buying_power"],
+                    values.get("realized_pnl"),
+                    values.get("unrealized_pnl"),
+                    values.get("drawdown_pct", 0),
                     values.get("execution_mode", "paper"),
                 ),
             )
@@ -743,6 +981,11 @@ class SwingDatabase:
     def equity_high(self, fallback: float) -> float:
         with self.connect() as connection:
             row = connection.execute("SELECT MAX(equity) AS high FROM equity_snapshots").fetchone()
+        return float(row["high"]) if row and row["high"] is not None else fallback
+
+    def equity_high_since(self, start_iso: str, fallback: float) -> float:
+        with self.connect() as connection:
+            row = connection.execute("SELECT MAX(equity) AS high FROM equity_snapshots WHERE observed_at >= ?", (start_iso,)).fetchone()
         return float(row["high"]) if row and row["high"] is not None else fallback
 
     def record_postmortem(self, postmortem_id: str, record: PostmortemRecord, model_name: str | None = None) -> None:
@@ -753,8 +996,14 @@ class SwingDatabase:
                    (postmortem_id,trade_id,classification,followed_strategy,answers_json,evidence_json,model_name,created_at)
                    VALUES(?,?,?,?,?,?,?,?)""",
                 (
-                    postmortem_id, record.trade_id, record.classification.value, int(record.followed_strategy),
-                    _json(answers), _json(record.evidence), model_name, _now(),
+                    postmortem_id,
+                    record.trade_id,
+                    record.classification.value,
+                    int(record.followed_strategy),
+                    _json(answers),
+                    _json(record.evidence),
+                    model_name,
+                    _now(),
                 ),
             )
             connection.execute(
@@ -763,8 +1012,15 @@ class SwingDatabase:
             )
 
     def record_model_cost(
-        self, *, role: str, model_name: str, prompt_tokens: int | None, completion_tokens: int | None,
-        cost: float, candidate_id: str | None = None, trade_id: str | None = None,
+        self,
+        *,
+        role: str,
+        model_name: str,
+        prompt_tokens: int | None,
+        completion_tokens: int | None,
+        cost: float,
+        candidate_id: str | None = None,
+        trade_id: str | None = None,
     ) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -792,8 +1048,15 @@ class SwingDatabase:
         return [dict(row) for row in rows]
 
     def create_observation(
-        self, lesson_id: str, description: str, trade_id: str, confidence: float, strategy_version: str,
-        applicable_setup: str | None, applicable_regime: str | None, evidence: dict[str, Any],
+        self,
+        lesson_id: str,
+        description: str,
+        trade_id: str,
+        confidence: float,
+        strategy_version: str,
+        applicable_setup: str | None,
+        applicable_regime: str | None,
+        evidence: dict[str, Any],
     ) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -802,8 +1065,15 @@ class SwingDatabase:
                     applicable_setup,applicable_regime,evidence_json,strategy_version)
                    VALUES(?,?,?,?,1,?,'OBSERVATION',?,?,?,?)""",
                 (
-                    lesson_id, _now(), description, _json([trade_id]), confidence, applicable_setup,
-                    applicable_regime, _json(evidence), strategy_version,
+                    lesson_id,
+                    _now(),
+                    description,
+                    _json([trade_id]),
+                    confidence,
+                    applicable_setup,
+                    applicable_regime,
+                    _json(evidence),
+                    strategy_version,
                 ),
             )
 
@@ -830,8 +1100,12 @@ class SwingDatabase:
 
     def add_hypothesis(self, values: dict[str, Any]) -> None:
         required = {
-            "hypothesis_id", "observation", "proposed_rule", "supporting_lesson_ids",
-            "supporting_sample_size", "validation_plan",
+            "hypothesis_id",
+            "observation",
+            "proposed_rule",
+            "supporting_lesson_ids",
+            "supporting_sample_size",
+            "validation_plan",
         }
         missing = required - values.keys()
         if missing:
@@ -844,12 +1118,21 @@ class SwingDatabase:
                     validation_results_json,candidate_strategy_version,human_approved,approved_by,approved_at)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    values["hypothesis_id"], _now(), values["observation"], values["proposed_rule"],
-                    values.get("setup_type"), values.get("market_regime"), _json(values["supporting_lesson_ids"]),
-                    values["supporting_sample_size"], values.get("status", "PROPOSED"), _json(values["validation_plan"]),
+                    values["hypothesis_id"],
+                    _now(),
+                    values["observation"],
+                    values["proposed_rule"],
+                    values.get("setup_type"),
+                    values.get("market_regime"),
+                    _json(values["supporting_lesson_ids"]),
+                    values["supporting_sample_size"],
+                    values.get("status", "PROPOSED"),
+                    _json(values["validation_plan"]),
                     _json(values["validation_results"]) if values.get("validation_results") is not None else None,
-                    values.get("candidate_strategy_version"), int(values.get("human_approved", False)),
-                    values.get("approved_by"), values.get("approved_at"),
+                    values.get("candidate_strategy_version"),
+                    int(values.get("human_approved", False)),
+                    values.get("approved_by"),
+                    values.get("approved_at"),
                 ),
             )
 
@@ -876,11 +1159,21 @@ class SwingDatabase:
                     walk_forward_json,artifact_path,accepted)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    values["backtest_id"], values.get("hypothesis_id"), values["strategy_version"], _now(),
-                    values["data_hash"], values["config_hash"], values["train_period"], values["validation_period"],
-                    values["out_of_sample_period"], _json(values["metrics"]), _json(values["benchmark"]),
-                    _json(values["regime_results"]), _json(values.get("walk_forward")) if values.get("walk_forward") else None,
-                    values.get("artifact_path"), int(values.get("accepted", False)),
+                    values["backtest_id"],
+                    values.get("hypothesis_id"),
+                    values["strategy_version"],
+                    _now(),
+                    values["data_hash"],
+                    values["config_hash"],
+                    values["train_period"],
+                    values["validation_period"],
+                    values["out_of_sample_period"],
+                    _json(values["metrics"]),
+                    _json(values["benchmark"]),
+                    _json(values["regime_results"]),
+                    _json(values.get("walk_forward")) if values.get("walk_forward") else None,
+                    values.get("artifact_path"),
+                    int(values.get("accepted", False)),
                 ),
             )
 
@@ -894,9 +1187,7 @@ class SwingDatabase:
                 raise KeyError(hypothesis_id)
             if int(hypothesis["supporting_sample_size"]) < 30:
                 raise ValueError("At least 30 supporting observations are required for production approval")
-            backtest = connection.execute(
-                "SELECT * FROM backtests WHERE hypothesis_id=? AND accepted=1 ORDER BY created_at DESC LIMIT 1", (hypothesis_id,)
-            ).fetchone()
+            backtest = connection.execute("SELECT * FROM backtests WHERE hypothesis_id=? AND accepted=1 ORDER BY created_at DESC LIMIT 1", (hypothesis_id,)).fetchone()
             if not backtest:
                 raise ValueError("No accepted out-of-sample backtest supports this hypothesis")
             version = hypothesis["candidate_strategy_version"]
@@ -906,8 +1197,7 @@ class SwingDatabase:
                 """INSERT OR IGNORE INTO strategy_versions
                    (strategy_version,status,introduced_at,changes_json,supporting_evidence_json,backtest_id,approved_by,approved_at)
                    VALUES(?, 'CANDIDATE', ?, ?, ?, ?, ?, ?)""",
-                (version, _now(), _json({"hypothesis_id": hypothesis_id}), _json({"backtest_id": backtest["backtest_id"]}),
-                 backtest["backtest_id"], approved_by, _now()),
+                (version, _now(), _json({"hypothesis_id": hypothesis_id}), _json({"backtest_id": backtest["backtest_id"]}), backtest["backtest_id"], approved_by, _now()),
             )
             connection.execute("UPDATE strategy_versions SET status='RETIRED' WHERE status='PRODUCTION'")
             connection.execute(
@@ -930,9 +1220,23 @@ class SwingDatabase:
 
     def table_counts(self) -> dict[str, int]:
         tables = [
-            "trades", "trade_snapshots", "market_regimes", "candidate_scores", "agent_decisions", "postmortems",
-            "lessons", "hypotheses", "strategy_versions", "backtests", "experiments", "rule_violations", "execution_events",
+            "trades",
+            "trade_snapshots",
+            "market_regimes",
+            "candidate_scores",
+            "agent_decisions",
+            "postmortems",
+            "lessons",
+            "hypotheses",
+            "strategy_versions",
+            "backtests",
+            "experiments",
+            "rule_violations",
+            "execution_events",
             "entry_admissions",
+            "risk_snapshots",
+            "risk_rejections",
+            "halt_events",
         ]
         with self.connect() as connection:
             return {table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]) for table in tables}
