@@ -4364,6 +4364,22 @@ slack = ["slack-sdk"]
 telegram = ["requests"]
 
 [[package]]
+name = "turso-serverless"
+version = "0.1.0"
+description = "Pure Python serverless driver for Turso databases (DB-API 2.0, SQL over HTTP)"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "turso_serverless-0.1.0-py3-none-any.whl", hash = "sha256:6a45e7f7c66ed5831f940bf40c45c02f1a0021be102bd9abff8e5899fa79c107"},
+    {file = "turso_serverless-0.1.0.tar.gz", hash = "sha256:36fdcc55b7f88e270a014e418c6220bb9f48da5087469f3dfacc68e56be05509"},
+]
+
+[package.extras]
+dev = ["pytest (>=8.0)"]
+differential = ["hypothesis (>=6.100)", "pytest (>=8.0)", "pyturso"]
+
+[[package]]
 name = "typer"
 version = "0.19.2"
 description = "Typer, build great CLIs. Easy to code. Based on Python type hints."
@@ -5035,4 +5051,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "7c4c5a2ee61ef718edd6a4b02e681309068f1554b14cab8a07f58aa51dcfc1df"
+content-hash = "dd52f11d6baa01e4c5e4e17b2a86d1be67dd32ff3b52c16127b7fd0b7fb855b6"

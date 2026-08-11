@@ -1,8 +1,25 @@
-"""Versioned SQLite system of record for adaptive swing trading."""
+"""Versioned SQLite system of record for adaptive swing trading.
+
+Backed by a local SQLite file by default. If TURSO_DATABASE_URL is set,
+connects to a hosted Turso (libSQL-over-HTTP) database instead -- this is
+what lets cloud routines share live state without git: they have no
+persistent disk and (it turns out) no working git-push credentials either,
+so committing the database file back to the repo every run doesn't work,
+regardless of file size. See docs/CRON_AGENTS.md.
+
+turso_serverless is a DB-API 2.0 driver deliberately built to be
+sqlite3-compatible (?-style params, Row supports both index and column-name
+access via __getitem__, IntegrityError raised on constraint violations,
+executescript() commits any pending transaction first same as sqlite3) --
+verified by installing the package and reading its source directly rather
+than trusting incomplete docs. PRAGMA statements below are SQLite-file
+specific (WAL mode, busy_timeout) and are skipped against Turso.
+"""
 
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -10,6 +27,12 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .models import PostmortemRecord, SwingCandidate
+
+
+def _turso_serverless():
+    import turso_serverless
+
+    return turso_serverless
 
 
 SCHEMA_VERSION = 2
@@ -326,15 +349,23 @@ class SwingDatabase:
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
+        self.turso_url = os.getenv("TURSO_DATABASE_URL") or None
+        self.turso_auth_token = os.getenv("TURSO_AUTH_TOKEN") or None
+        self.integrity_errors: tuple[type[Exception], ...] = (sqlite3.IntegrityError,)
+        if self.turso_url:
+            self.integrity_errors = (sqlite3.IntegrityError, _turso_serverless().IntegrityError)
 
     @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA busy_timeout = 5000")
+    def connect(self) -> Iterator[Any]:
+        if self.turso_url:
+            connection = _turso_serverless().connect(self.turso_url, auth_token=self.turso_auth_token)
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(self.path)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA busy_timeout = 5000")
         try:
             yield connection
             connection.commit()
@@ -471,7 +502,7 @@ class SwingDatabase:
                 ticker=ticker, side=side, quantity=quantity, event_type="ORDER_RESERVED", status="PENDING", payload=payload,
             )
             return True
-        except sqlite3.IntegrityError:
+        except self.integrity_errors:
             return False
 
     def reserve_entry_admission(
