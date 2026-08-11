@@ -20,13 +20,9 @@ def test_universe_excludes_leveraged_and_uses_valid_sectors():
 
 
 class _FakeTicker:
-    def __init__(self, symbol, frame=None, earnings_index=None):
+    def __init__(self, symbol, earnings_index=None):
         self.symbol = symbol
-        self._frame = frame
         self._earnings_index = earnings_index
-
-    def history(self, period, interval, auto_adjust):
-        return self._frame
 
     def get_earnings_dates(self, limit=4):
         if self._earnings_index is None:
@@ -34,34 +30,35 @@ class _FakeTicker:
         return pd.DataFrame(index=self._earnings_index)
 
 
-def _sample_frame() -> pd.DataFrame:
-    index = pd.date_range(end=pd.Timestamp.now("UTC"), periods=5, freq="B", tz="UTC")
-    return pd.DataFrame({
-        "Open": [1.0, 2.0, 3.0, 4.0, 5.0], "High": [1.5, 2.5, 3.5, 4.5, 5.5],
-        "Low": [0.5, 1.5, 2.5, 3.5, 4.5], "Close": [1.2, 2.2, 3.2, 4.2, 5.2],
-        "Volume": [1_000_000] * 5,
-    }, index=index)
+def _sample_alpaca_bars(symbol: str, count: int = 5) -> dict:
+    base = pd.Timestamp.now("UTC").normalize()
+    return {
+        "bars": {
+            symbol: [
+                {
+                    "t": (base - pd.Timedelta(days=count - i)).isoformat(),
+                    "o": 1.0 + i, "h": 1.5 + i, "l": 0.5 + i, "c": 1.2 + i, "v": 1_000_000,
+                }
+                for i in range(count)
+            ]
+        }
+    }
 
 
 def test_fetch_bars_normalizes_columns_and_caches(monkeypatch, tmp_path):
     monkeypatch.setattr(data_feed, "CACHE_DIR", tmp_path)
-    frame = _sample_frame()
+    payload = _sample_alpaca_bars("AAA")
 
-    class _FakeYF:
-        def Ticker(self, symbol):
-            return _FakeTicker(symbol, frame=frame)
-
-    monkeypatch.setattr(data_feed, "_yf", lambda: _FakeYF())
+    monkeypatch.setattr(data_feed, "_alpaca_get", lambda path, params: payload)
     bars = data_feed.fetch_bars(["AAA"], lookback_days=10)
     assert "AAA" in bars
     assert list(bars["AAA"].columns) == ["open", "high", "low", "close", "volume"]
     assert len(bars["AAA"]) == 5
 
-    class _ExplodingYF:
-        def Ticker(self, symbol):
-            raise AssertionError("cache hit should not call yfinance again")
+    def _exploding_get(path, params):
+        raise AssertionError("cache hit should not call Alpaca again")
 
-    monkeypatch.setattr(data_feed, "_yf", lambda: _ExplodingYF())
+    monkeypatch.setattr(data_feed, "_alpaca_get", _exploding_get)
     cached = data_feed.fetch_bars(["AAA"], lookback_days=10)
     assert len(cached["AAA"]) == 5
 
@@ -69,11 +66,7 @@ def test_fetch_bars_normalizes_columns_and_caches(monkeypatch, tmp_path):
 def test_fetch_bars_skips_symbols_with_no_data(monkeypatch, tmp_path):
     monkeypatch.setattr(data_feed, "CACHE_DIR", tmp_path)
 
-    class _FakeYF:
-        def Ticker(self, symbol):
-            return _FakeTicker(symbol, frame=pd.DataFrame())
-
-    monkeypatch.setattr(data_feed, "_yf", lambda: _FakeYF())
+    monkeypatch.setattr(data_feed, "_alpaca_get", lambda path, params: {"bars": {}})
     bars = data_feed.fetch_bars(["MISSING"], lookback_days=10)
     assert bars == {}
 

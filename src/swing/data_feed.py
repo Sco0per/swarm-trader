@@ -1,8 +1,21 @@
-"""yfinance-based data feed adapter for the deterministic swing scanner.
+"""Alpaca-backed data feed adapter for the deterministic swing scanner.
 
-Mirrors the lazy-import + disk-cache pattern already used by
-``src.tools.api_free`` so this module has no hard yfinance/network dependency
-at import time; tests monkeypatch ``_yf`` to run fully offline.
+Bars come from Alpaca's market data API (already a configured broker
+dependency, see ``src/swing/brokers/alpaca.py``) rather than yfinance:
+Yahoo Finance actively blocks requests from cloud/datacenter IP ranges
+(observed as 100% connection resets from this project's cloud routine
+environment), which yfinance has no way around. Alpaca is a legitimate,
+key-authenticated API with no such anti-scraping wall.
+
+Earnings-date lookup still uses yfinance (Alpaca's data API has no earnings
+calendar) via the lazy ``_yf()`` import below, matching the original
+lazy-import + disk-cache pattern used by ``src.tools.api_free`` so this
+module has no hard yfinance/network dependency at import time; tests
+monkeypatch ``_yf`` to run fully offline. If earnings lookups also turn out
+to be blocked from the cloud environment, they already degrade safely: a
+failed lookup returns ``None``, and ``market.py`` treats an unknown earnings
+date as a scoring exclusion (not a crash) -- see the ``event_fraction``
+calculation there.
 
 Known limitation (documented, not silently papered over): there is no free,
 reliable halt-status feed, so ``UniverseAsset.is_halted`` always defaults to
@@ -14,12 +27,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 from .market import SECTOR_ETFS, UniverseAsset
 from .universe import UNIVERSE, UniverseEntry
@@ -29,11 +44,29 @@ BAR_CACHE_TTL_SECONDS = 6 * 3600
 EARNINGS_CACHE_TTL_SECONDS = 24 * 3600
 REQUIRED_COLUMNS = ("open", "high", "low", "close", "volume")
 
+ALPACA_DATA_BASE = "https://data.alpaca.markets/v2"
+ALPACA_BATCH_SIZE = 50
+
 
 def _yf():
     import yfinance as yf
 
     return yf
+
+
+def _alpaca_headers() -> dict[str, str]:
+    api_key = os.getenv("ALPACA_API_KEY", "")
+    api_secret = os.getenv("ALPACA_API_SECRET", "")
+    if not api_key or not api_secret:
+        raise RuntimeError("ALPACA_API_KEY/ALPACA_API_SECRET must be set to fetch market data from Alpaca")
+    return {"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret}
+
+
+def _alpaca_get(path: str, params: dict) -> dict:
+    """Thin, mockable seam over the Alpaca data API -- tests monkeypatch this."""
+    response = requests.get(f"{ALPACA_DATA_BASE}{path}", headers=_alpaca_headers(), params=params, timeout=30)
+    response.raise_for_status()
+    return response.json()
 
 
 def _cache_path(namespace: str, key: str) -> Path:
@@ -81,10 +114,50 @@ def _records_to_frame(records: list[dict]) -> pd.DataFrame:
     return frame[list(REQUIRED_COLUMNS)].astype(float)
 
 
-def fetch_bars(symbols: list[str], *, lookback_days: int = 320) -> dict[str, pd.DataFrame]:
-    """Fetch daily OHLCV bars per symbol, disk-cached for BAR_CACHE_TTL_SECONDS."""
-    yf = _yf()
+def _fetch_alpaca_bars_batch(symbols: list[str], *, start: str, end: str) -> dict[str, pd.DataFrame]:
+    """One batched Alpaca call (with pagination) covering up to ALPACA_BATCH_SIZE symbols."""
+    rows_by_symbol: dict[str, list[dict]] = {symbol: [] for symbol in symbols}
+    page_token: str | None = None
+    while True:
+        params = {
+            "symbols": ",".join(symbols), "timeframe": "1Day", "start": start, "end": end,
+            "limit": 10000, "adjustment": "all",
+        }
+        if page_token:
+            params["page_token"] = page_token
+        try:
+            payload = _alpaca_get("/stocks/bars", params)
+        except Exception:
+            break
+        for symbol, rows in (payload.get("bars") or {}).items():
+            rows_by_symbol.setdefault(symbol, []).extend(rows)
+        page_token = payload.get("next_page_token")
+        if not page_token:
+            break
+
     result: dict[str, pd.DataFrame] = {}
+    for symbol, rows in rows_by_symbol.items():
+        if not rows:
+            continue
+        frame = pd.DataFrame(rows)
+        if frame.empty:
+            continue
+        frame = frame.rename(columns={"t": "date", "o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"})
+        if not {"date", *REQUIRED_COLUMNS}.issubset(frame.columns):
+            continue
+        frame["date"] = pd.to_datetime(frame["date"], utc=True)
+        frame = frame.set_index("date").sort_index()
+        frame = frame[list(REQUIRED_COLUMNS)].dropna().astype(float)
+        if frame.empty:
+            continue
+        result[symbol] = frame
+    return result
+
+
+def fetch_bars(symbols: list[str], *, lookback_days: int = 320) -> dict[str, pd.DataFrame]:
+    """Fetch daily OHLCV bars per symbol from Alpaca, disk-cached for BAR_CACHE_TTL_SECONDS."""
+    result: dict[str, pd.DataFrame] = {}
+    to_fetch: list[str] = []
     for symbol in symbols:
         cache_key = f"{symbol}:{lookback_days}"
         cached = _cache_get("bars", cache_key, BAR_CACHE_TTL_SECONDS)
@@ -94,20 +167,20 @@ def fetch_bars(symbols: list[str], *, lookback_days: int = 320) -> dict[str, pd.
                 continue
             except Exception:
                 pass
-        try:
-            frame = yf.Ticker(symbol).history(period=f"{lookback_days + 30}d", interval="1d", auto_adjust=True)
-        except Exception:
-            continue
-        if frame is None or frame.empty:
-            continue
-        frame = frame.rename(columns=str.lower)
-        if not set(REQUIRED_COLUMNS).issubset(frame.columns):
-            continue
-        frame = frame[list(REQUIRED_COLUMNS)].dropna()
-        if frame.empty:
-            continue
-        result[symbol] = frame
-        _cache_set("bars", cache_key, _bars_to_records(frame))
+        to_fetch.append(symbol)
+
+    if not to_fetch:
+        return result
+
+    start = (datetime.now(timezone.utc) - timedelta(days=lookback_days + 30)).strftime("%Y-%m-%d")
+    end = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    for i in range(0, len(to_fetch), ALPACA_BATCH_SIZE):
+        batch = to_fetch[i : i + ALPACA_BATCH_SIZE]
+        for symbol, frame in _fetch_alpaca_bars_batch(batch, start=start, end=end).items():
+            result[symbol] = frame
+            _cache_set("bars", f"{symbol}:{lookback_days}", _bars_to_records(frame))
+
     return result
 
 
