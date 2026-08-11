@@ -72,10 +72,5 @@ autoresearch/data_cache/
 
 # Runtime data (generated per-deployment)
 snapshots/
-data/*
+data/
 autoresearch/experiments/
-
-# swing-trader's system-of-record DB is intentionally tracked: cloud
-# routines have no persistent disk, so state (kill switches, halts,
-# journal) round-trips through git between runs. See docs/CRON_AGENTS.md.
-!data/adaptive_swing.db
