@@ -91,8 +91,8 @@ def test_valid_trend_pullback_passes(settings):
     result = _trend_result(settings)
     assert result.passed, result.failed_conditions
     assert all(result.conditions.values())
-    assert result.provisional_stop is not None and result.target is not None
-    assert result.provisional_stop < float(result.features["price"] or 0) < result.target
+    assert result.invalidation_level is not None and result.target is not None
+    assert result.invalidation_level < float(result.features["price"] or 0) < result.target
 
 
 @pytest.mark.parametrize(
@@ -237,7 +237,7 @@ def test_insufficient_rr_and_stale_or_incomplete_bars_fail_closed(settings):
 )
 def test_liquidity_price_spread_and_history_boundaries_reject(settings, mutation, reason):
     bars, spy = _trend_inputs()
-    asset = UniverseAsset("BOUND", earnings_trading_days=30, bid=99.75, ask=100.25)
+    asset = UniverseAsset("BOUND", earnings_trading_days=30, prohibited_event_risk=False, bid=99.75, ask=100.25)
     if mutation == "price":
         bars[["open", "high", "low", "close"]] = settings.minimum_price
     elif mutation == "volume":
@@ -260,8 +260,8 @@ def test_blacklist_leveraged_etf_and_unloadable_blacklist_fail_closed(settings, 
     bars, spy = _trend_inputs()
     scanner = DeterministicSwingScanner(local)
     assets = [
-        UniverseAsset("BLOCK", bid=99.9, ask=100.1),
-        UniverseAsset("TQQQ", is_etf=True, security_type="etf", bid=99.9, ask=100.1),
+        UniverseAsset("BLOCK", prohibited_event_risk=False, bid=99.9, ask=100.1),
+        UniverseAsset("TQQQ", is_etf=True, security_type="etf", prohibited_event_risk=False, bid=99.9, ask=100.1),
     ]
     _, report = scanner.scan_with_report(assets, {asset.symbol: bars for asset in assets}, spy_bars=spy, qqq_bars=spy, retrieved_at=AS_OF)
     assert report.rejection_counts["blacklisted_symbol"] == 1

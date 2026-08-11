@@ -12,10 +12,17 @@ def _snapshot():
     now = datetime.now(timezone.utc).isoformat()
     return {
         "account": {
-            "account_id": "robinhood-agentic-1", "equity": 2000.0, "cash": 2000.0, "buying_power": 2000.0,
-            "is_paper": False, "is_margin_enabled": False, "dedicated_agentic_account": True, "retrieved_at": now,
+            "account_id": "robinhood-agentic-1",
+            "equity": 2000.0,
+            "cash": 2000.0,
+            "buying_power": 2000.0,
+            "is_paper": False,
+            "is_margin_enabled": False,
+            "dedicated_agentic_account": True,
+            "retrieved_at": now,
         },
-        "positions": [], "open_orders": [],
+        "positions": [],
+        "open_orders": [],
         "asset": {"symbol": "XYZ", "asset_class": "us_equity", "tradable": True, "status": "active"},
         "quote": {"symbol": "XYZ", "last": 100.0, "bid": 99.95, "ask": 100.05, "retrieved_at": now, "market_timestamp": now},
         "trade_history": [],
@@ -53,4 +60,4 @@ def test_live_ticket_produces_approved_ticket_in_live_mode(monkeypatch, tmp_path
     out = capsys.readouterr().out
     assert "DRY_RUN_APPROVED" in out
     assert "APPROVED LIVE ORDER TICKET" in out
-    assert '"quantity": 2' in out
+    assert '"quantity": 3' in out

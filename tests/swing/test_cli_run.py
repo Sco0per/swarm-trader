@@ -6,21 +6,45 @@ from datetime import datetime, timezone
 
 from src.swing import cli as cli_module
 from src.swing.brokers.fake import FakeBrokerProvider
-from src.swing.models import MarketRegime, Quote, SetupType, SwingCandidate, TimestampedData
+from src.swing.models import (
+    MarketRegime,
+    Quote,
+    SetupType,
+    SwingCandidate,
+    TimestampedData,
+)
 
 
 def _make_candidate(ticker: str) -> SwingCandidate:
     now = datetime.now(timezone.utc)
     return SwingCandidate(
-        ticker=ticker, setup_type=SetupType.TREND_PULLBACK, score=88,
-        score_components={"market_regime": 15, "trend_quality": 15, "setup_quality": 18,
-                          "relative_strength": 9, "volume_confirmation": 8, "entry_quality": 8,
-                          "risk_reward": 8, "liquidity": 4, "event_risk": 3},
-        market_regime=MarketRegime.BULL, sector="Technology", sector_etf="XLK", sector_trend="UP",
-        sector_relative_strength=0.03, stock_relative_strength_spy=0.08,
-        stock_relative_strength_sector=0.05, price=100, average_daily_volume=2_000_000,
-        spread_pct=0.001, rsi=55, macd=1.2, atr=3, ma20=98, ma50=92, ma200=80,
-        volume_ratio=0.9, support=96, resistance=110, earnings_trading_days=30,
+        ticker=ticker,
+        setup_type=SetupType.TREND_PULLBACK,
+        score=88,
+        score_components={"market_regime": 15, "trend_quality": 15, "setup_quality": 18, "relative_strength": 9, "volume_confirmation": 8, "entry_quality": 8, "risk_reward": 8, "liquidity": 4, "event_risk": 3},
+        market_regime=MarketRegime.BULL,
+        sector="Technology",
+        sector_etf="XLK",
+        sector_trend="UP",
+        sector_relative_strength=0.03,
+        stock_relative_strength_spy=0.08,
+        stock_relative_strength_sector=0.05,
+        price=100,
+        average_daily_volume=2_000_000,
+        spread_pct=0.001,
+        rsi=55,
+        macd=1.2,
+        atr=3,
+        ma20=98,
+        ma50=92,
+        ma200=80,
+        volume_ratio=0.9,
+        support=96,
+        resistance=110,
+        structural_invalidation=96,
+        earnings_trading_days=30,
+        earnings_data_status="clear",
+        major_event_status="clear",
         data=TimestampedData(source="test", retrieved_at=now, market_timestamp=now),
     )
 
@@ -41,30 +65,47 @@ class _StubBackend:
         candidate = payload["candidate"]
         if role == "technical":
             kwargs = dict(
-                trend_structure="steady uptrend", setup_valid=True, entry=candidate["price"],
-                stop=candidate["support"], target=candidate["resistance"],
-                support_resistance="holding above support", volume_analysis="in line", invalidation="close below support",
+                trend_structure="steady uptrend",
+                setup_valid=True,
+                support_resistance="holding above support",
+                volume_analysis="in line",
+                invalidation="close below support",
             )
         elif role == "fundamental":
             kwargs = dict(
                 earnings_trading_days=candidate.get("earnings_trading_days") or 30,
-                has_blocking_event_risk=False, fundamental_context="no blocking events",
+                has_blocking_event_risk=False,
+                fundamental_context="no blocking events",
             )
         elif role == "bull":
             kwargs = dict(strongest_evidence=["price above rising moving averages"], thesis="trend intact", confidence=80)
         elif role == "bear":
             kwargs = dict(
-                kill_trade=False, is_extended_from_support=False, is_chasing_price=False, regime_is_weak=False,
-                sector_is_weakening=False, volume_is_unconvincing=False, support_is_weak=False,
-                target_is_unrealistic=False, earnings_too_close=False, repeats_known_bad_pattern=False,
-                weaknesses=[], thesis="risk is manageable", confidence=75,
+                kill_trade=False,
+                is_extended_from_support=False,
+                is_chasing_price=False,
+                regime_is_weak=False,
+                sector_is_weakening=False,
+                volume_is_unconvincing=False,
+                support_is_weak=False,
+                target_is_unrealistic=False,
+                earnings_too_close=False,
+                repeats_known_bad_pattern=False,
+                weaknesses=[],
+                thesis="risk is manageable",
+                confidence=75,
             )
         elif role == "portfolio_manager":
             kwargs = dict(
-                ticker=candidate["ticker"], decision="BUY", setup_type=candidate["setup_type"],
-                entry=candidate["price"], stop=candidate["support"], target=candidate["resistance"],
-                confidence_score=85, market_regime=candidate["market_regime"], bull_case="trend",
-                bear_case="manageable risk", invalidation="close below support", event_risk="none nearby",
+                ticker=candidate["ticker"],
+                decision="BUY",
+                setup_type=candidate["setup_type"],
+                confidence_score=85,
+                market_regime=candidate["market_regime"],
+                bull_case="trend",
+                bear_case="manageable risk",
+                invalidation="close below support",
+                event_risk="none nearby",
                 reasoning="setup qualifies",
             )
         else:
@@ -75,7 +116,8 @@ class _StubBackend:
 def _fake_broker() -> FakeBrokerProvider:
     now = datetime.now(timezone.utc)
     broker = FakeBrokerProvider(
-        equity=2_000, cash=2_000,
+        equity=2_000,
+        cash=2_000,
         quotes={
             "AAA": Quote(symbol="AAA", last=100, bid=99.95, ask=100.05, source="test", retrieved_at=now, market_timestamp=now),
             "BBB": Quote(symbol="BBB", last=100, bid=99.95, ask=100.05, source="test", retrieved_at=now, market_timestamp=now),
@@ -85,9 +127,17 @@ def _fake_broker() -> FakeBrokerProvider:
 
 
 def _run_cli(monkeypatch, tmp_path, capsys, *, argv, env, candidates, backend):
-    monkeypatch.setattr(cli_module, "load_scan_inputs", lambda **kwargs: types.SimpleNamespace(
-        assets=[], bars_by_symbol={}, spy_bars=None, qqq_bars=None, sector_bars={},
-    ))
+    monkeypatch.setattr(
+        cli_module,
+        "load_scan_inputs",
+        lambda **kwargs: types.SimpleNamespace(
+            assets=[],
+            bars_by_symbol={},
+            spy_bars=None,
+            qqq_bars=None,
+            sector_bars={},
+        ),
+    )
     monkeypatch.setattr(cli_module, "DeterministicSwingScanner", lambda settings: _StubScanner(settings, candidates))
     broker = _fake_broker()
     monkeypatch.setattr(cli_module, "AlpacaPaperProvider", lambda key, secret: broker)
@@ -103,8 +153,13 @@ def _run_cli(monkeypatch, tmp_path, capsys, *, argv, env, candidates, backend):
 def test_run_without_configured_backend_produces_no_proposals(monkeypatch, tmp_path, capsys):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     payload = _run_cli(
-        monkeypatch, tmp_path, capsys, argv=["run"],
-        env={"TRADING_ENABLED": "false"}, candidates=[_make_candidate("AAA")], backend=_StubBackend(),
+        monkeypatch,
+        tmp_path,
+        capsys,
+        argv=["run"],
+        env={"TRADING_ENABLED": "false"},
+        candidates=[_make_candidate("AAA")],
+        backend=_StubBackend(),
     )
     assert payload["llm_backend_configured"] is False
     assert payload["proposals_generated"] == 0
@@ -114,12 +169,18 @@ def test_run_without_configured_backend_produces_no_proposals(monkeypatch, tmp_p
 def test_run_with_backend_respects_one_trade_per_day_limit(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     payload = _run_cli(
-        monkeypatch, tmp_path, capsys, argv=["run"],
+        monkeypatch,
+        tmp_path,
+        capsys,
+        argv=["run"],
         env={
-            "TRADING_ENABLED": "true", "ANTHROPIC_API_KEY": "test-key",
-            "ANALYST_MODEL": "claude-sonnet-5", "PORTFOLIO_MANAGER_MODEL": "claude-opus-5",
+            "TRADING_ENABLED": "true",
+            "ANTHROPIC_API_KEY": "test-key",
+            "ANALYST_MODEL": "claude-sonnet-5",
+            "PORTFOLIO_MANAGER_MODEL": "claude-opus-5",
         },
-        candidates=[_make_candidate("AAA"), _make_candidate("BBB")], backend=_StubBackend(),
+        candidates=[_make_candidate("AAA"), _make_candidate("BBB")],
+        backend=_StubBackend(),
     )
     assert payload["llm_backend_configured"] is True
     assert payload["proposals_generated"] == 2
@@ -134,8 +195,13 @@ def test_scan_records_candidates_without_any_llm_call(monkeypatch, tmp_path, cap
             raise AssertionError("scan must never call the LLM backend")
 
     payload = _run_cli(
-        monkeypatch, tmp_path, capsys, argv=["scan"],
-        env={}, candidates=[_make_candidate("AAA")], backend=_ExplodingBackend(),
+        monkeypatch,
+        tmp_path,
+        capsys,
+        argv=["scan"],
+        env={},
+        candidates=[_make_candidate("AAA")],
+        backend=_ExplodingBackend(),
     )
     assert payload["candidates_found"] == 1
     assert payload["candidates"][0]["ticker"] == "AAA"

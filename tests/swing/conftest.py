@@ -7,8 +7,15 @@ import pytest
 from src.swing.config import SwingSettings
 from src.swing.database import SwingDatabase
 from src.swing.models import (
-    AccountSnapshot, Decision, MarketRegime, PortfolioRiskState, Quote, SetupType,
-    SwingCandidate, TimestampedData, TradeProposal,
+    AccountSnapshot,
+    Decision,
+    MarketRegime,
+    PortfolioRiskState,
+    Quote,
+    SetupType,
+    SwingCandidate,
+    TimestampedData,
+    TradeProposal,
 )
 
 
@@ -30,15 +37,33 @@ def database(settings):
 def candidate():
     now = datetime.now(timezone.utc)
     return SwingCandidate(
-        ticker="XYZ", setup_type=SetupType.TREND_PULLBACK, score=88,
-        score_components={"market_regime": 15, "trend_quality": 15, "setup_quality": 18,
-                          "relative_strength": 9, "volume_confirmation": 8, "entry_quality": 8,
-                          "risk_reward": 8, "liquidity": 4, "event_risk": 3},
-        market_regime=MarketRegime.BULL, sector="Technology", sector_etf="XLK", sector_trend="UP",
-        sector_relative_strength=0.03, stock_relative_strength_spy=0.08,
-        stock_relative_strength_sector=0.05, price=100, average_daily_volume=2_000_000,
-        spread_pct=0.001, rsi=55, macd=1.2, atr=3, ma20=98, ma50=92, ma200=80,
-        volume_ratio=0.9, support=96, resistance=110, earnings_trading_days=10,
+        ticker="XYZ",
+        setup_type=SetupType.TREND_PULLBACK,
+        score=88,
+        score_components={"market_regime": 15, "trend_quality": 15, "setup_quality": 18, "relative_strength": 9, "volume_confirmation": 8, "entry_quality": 8, "risk_reward": 8, "liquidity": 4, "event_risk": 3},
+        market_regime=MarketRegime.BULL,
+        sector="Technology",
+        sector_etf="XLK",
+        sector_trend="UP",
+        sector_relative_strength=0.03,
+        stock_relative_strength_spy=0.08,
+        stock_relative_strength_sector=0.05,
+        price=100,
+        average_daily_volume=2_000_000,
+        spread_pct=0.001,
+        rsi=55,
+        macd=1.2,
+        atr=3,
+        ma20=98,
+        ma50=92,
+        ma200=80,
+        volume_ratio=0.9,
+        support=96,
+        resistance=110,
+        structural_invalidation=96,
+        earnings_trading_days=10,
+        earnings_data_status="clear",
+        major_event_status="clear",
         data=TimestampedData(source="test", retrieved_at=now, market_timestamp=now),
     )
 
@@ -46,10 +71,19 @@ def candidate():
 @pytest.fixture
 def proposal(candidate, settings):
     return TradeProposal(
-        ticker=candidate.ticker, decision=Decision.BUY, setup_type=candidate.setup_type,
-        entry=100, stop=96, target=108, confidence_score=88, candidate_score=candidate.score,
-        market_regime=candidate.market_regime, bull_case="trend and support", bear_case="market weakness",
-        invalidation="close below support", event_risk="earnings beyond exclusion window",
+        ticker=candidate.ticker,
+        decision=Decision.BUY,
+        setup_type=candidate.setup_type,
+        entry=100,
+        stop=96,
+        target=108,
+        confidence_score=88,
+        candidate_score=candidate.score,
+        market_regime=candidate.market_regime,
+        bull_case="trend and support",
+        bear_case="market weakness",
+        invalidation="close below support",
+        event_risk="earnings beyond exclusion window",
         strategy_version=settings.strategy_version,
     )
 

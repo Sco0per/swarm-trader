@@ -98,7 +98,7 @@ def test_live_ticket_flow_uses_unchanged_risk_engine(database, settings, candida
     result = SwingExecutionService(live_settings, database, broker).submit(proposal, candidate, dry_run=True)
     assert result.status == "DRY_RUN_APPROVED"
     assert result.risk.approved is True
-    assert result.risk.quantity == 2  # floor(2000 * 0.005 / (100 - 96))
+    assert result.risk.quantity == 3  # floor(2000 * 0.0075 / (100 - 96))
 
 
 def test_live_ticket_never_calls_place_order_even_if_dry_run_is_disabled(database, settings, candidate, proposal):

@@ -69,7 +69,7 @@ def test_legacy_monitor_is_disabled_and_zero_thresholds_never_trigger():
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
-        ({"normal_risk_pct": 0.0051}, "0.50%"),
+        ({"normal_risk_pct": 0.0076}, "0.75%"),
         ({"a_plus_risk_pct": 0.0076}, "0.75%"),
         ({"absolute_max_risk_pct": 0.0101}, "1.00%"),
         ({"max_combined_open_risk_pct": 0.0201}, "2.00%"),
@@ -438,9 +438,9 @@ def test_scanner_scores_viable_asset_and_excludes_banned(settings):
         index=index,
     )
     assets = [
-        UniverseAsset("GOOD", sector="Technology", earnings_trading_days=10, bid=99.95, ask=100.05),
-        UniverseAsset("TQQQ", is_etf=True, bid=99.95, ask=100.05),
-        UniverseAsset("HALT", is_halted=True, bid=99.95, ask=100.05),
+        UniverseAsset("GOOD", sector="Technology", earnings_trading_days=10, prohibited_event_risk=False, bid=99.95, ask=100.05),
+        UniverseAsset("TQQQ", is_etf=True, prohibited_event_risk=False, bid=99.95, ask=100.05),
+        UniverseAsset("HALT", is_halted=True, prohibited_event_risk=False, bid=99.95, ask=100.05),
     ]
     results = DeterministicSwingScanner(settings).scan(
         assets,

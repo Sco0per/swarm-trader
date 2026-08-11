@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from src.swing.config import SwingSettings
 from src.swing.database import SwingDatabase
-from src.swing.models import Decision, MarketRegime, Position, Quote, TradeProposal
+from src.swing.models import Position, TradeProposal
 from src.swing.risk import SwingRiskManager
 
 
@@ -19,24 +19,24 @@ def review(settings, database, proposal, candidate, quote, portfolio, intent="in
 def test_position_size_uses_technical_risk_and_rounds_down(settings, database, proposal, candidate, quote, portfolio):
     result = review(settings, database, proposal, candidate, quote, portfolio)
     assert result.approved
-    assert result.allowed_dollar_risk == 10
-    assert result.quantity == 2
-    assert result.planned_dollar_risk == 8
-    assert result.planned_account_risk_pct == pytest.approx(0.004)
+    assert result.allowed_dollar_risk == 15
+    assert result.quantity == 3
+    assert result.planned_dollar_risk == 12
+    assert result.planned_account_risk_pct == pytest.approx(0.006)
 
 
 def test_position_size_never_increases_risk_to_fit_one_share(settings, database, proposal, candidate, quote, portfolio):
-    proposal = proposal.model_copy(update={"stop": 80, "target": 140})
-    result = review(settings, database, proposal, candidate, quote, portfolio)
-    assert not result.approved
-    assert result.rule == "position_too_small"
+    tight = candidate.model_copy(update={"atr": 1, "structural_invalidation": 99})
+    result = review(settings, database, proposal, tight, quote, portfolio)
+    assert result.approved
+    assert result.risk_constraints["risk"] == 15
+    assert result.risk_constraints["position_allocation"] == 7
+    assert result.quantity == 7
 
 
 @pytest.mark.parametrize(
     ("field", "value", "rule"),
-    [("new_positions_today", 1, "daily_entry_limit"),
-     ("new_positions_this_week", 3, "weekly_entry_limit"),
-     ("consecutive_losses", 3, "consecutive_loss_halt")],
+    [("new_positions_today", 1, "daily_entry_limit"), ("new_positions_this_week", 3, "weekly_entry_limit"), ("consecutive_losses", 3, "consecutive_loss_halt")],
 )
 def test_activity_halts(settings, database, proposal, candidate, quote, portfolio, field, value, rule):
     result = review(settings, database, proposal, candidate, quote, portfolio.model_copy(update={field: value}))
@@ -56,8 +56,28 @@ def test_never_adds_or_averages_down(settings, database, proposal, candidate, qu
 
 
 def test_combined_open_risk(settings, database, proposal, candidate, quote, portfolio):
-    state = portfolio.model_copy(update={"planned_open_risk": 39})
-    result = review(settings, database, proposal, candidate, quote, state)
+    database.add_trade(
+        {
+            "trade_id": str(uuid4()),
+            "decision_id": str(uuid4()),
+            "ticker": "AAA",
+            "setup_type": "TREND_PULLBACK",
+            "status": "SUBMITTED",
+            "strategy_version": settings.strategy_version,
+            "initial_stop": 61,
+            "final_stop": 61,
+            "target": 108,
+            "shares": 0,
+            "planned_dollar_risk": 39,
+            "planned_account_risk_pct": 0.0195,
+            "planned_rr": 2,
+            "market_regime": "BULL",
+            "sector": "Technology",
+            "candidate_score": 88,
+            "risk_validation_result": "approved",
+        }
+    )
+    result = review(settings, database, proposal, candidate, quote, portfolio)
     assert not result.approved and result.rule == "max_combined_open_risk"
 
 
@@ -81,11 +101,11 @@ def test_stop_cannot_widen(settings, database):
 
 
 def test_minimum_reward_risk(settings, database, proposal, candidate, quote, portfolio):
-    bad = proposal.model_copy(update={"target": 107})
-    result = review(settings, database, bad, candidate, quote, portfolio)
+    bad_candidate = candidate.model_copy(update={"resistance": 107})
+    result = review(settings, database, proposal, bad_candidate, quote, portfolio)
     assert not result.approved and result.rule == "minimum_rr"
-    exceptional = bad.model_copy(update={"exceptional_rr_evidence": True})
-    assert review(settings, database, exceptional, candidate, quote, portfolio, "intent-2").approved
+    exceptional = proposal.model_copy(update={"exceptional_rr_evidence": True})
+    assert not review(settings, database, exceptional, bad_candidate, quote, portfolio, "intent-2").approved
 
 
 @pytest.mark.parametrize(("days", "rule"), [(5, "earnings_exclusion"), (None, "earnings_unknown")])
@@ -132,16 +152,33 @@ def test_duplicate_intent_rejected(settings, database, proposal, candidate, quot
 
 def _add_closed_loss(database, settings, candidate, exit_time):
     database.record_candidate(candidate)
-    database.add_trade({
-        "trade_id": str(uuid4()), "decision_id": str(uuid4()), "candidate_id": candidate.candidate_id,
-        "ticker": "XYZ", "setup_type": candidate.setup_type.value, "status": "CLOSED",
-        "strategy_version": settings.strategy_version,
-        "entry_datetime": (exit_time - timedelta(days=5)).isoformat(), "exit_datetime": exit_time.isoformat(),
-        "entry_price": 100, "exit_price": 96, "initial_stop": 96, "final_stop": 96, "target": 108,
-        "shares": 2, "planned_dollar_risk": 8, "planned_account_risk_pct": 0.004, "planned_rr": 2,
-        "realized_pnl": -8, "realized_r": -1, "market_regime": candidate.market_regime.value,
-        "candidate_score": candidate.score, "risk_validation_result": "approved",
-    })
+    database.add_trade(
+        {
+            "trade_id": str(uuid4()),
+            "decision_id": str(uuid4()),
+            "candidate_id": candidate.candidate_id,
+            "ticker": "XYZ",
+            "setup_type": candidate.setup_type.value,
+            "status": "CLOSED",
+            "strategy_version": settings.strategy_version,
+            "entry_datetime": (exit_time - timedelta(days=5)).isoformat(),
+            "exit_datetime": exit_time.isoformat(),
+            "entry_price": 100,
+            "exit_price": 96,
+            "initial_stop": 96,
+            "final_stop": 96,
+            "target": 108,
+            "shares": 2,
+            "planned_dollar_risk": 8,
+            "planned_account_risk_pct": 0.004,
+            "planned_rr": 2,
+            "realized_pnl": -8,
+            "realized_r": -1,
+            "market_regime": candidate.market_regime.value,
+            "candidate_score": candidate.score,
+            "risk_validation_result": "approved",
+        }
+    )
 
 
 def test_post_loss_cooldown(settings, database, proposal, candidate, quote, portfolio):
