@@ -20,8 +20,8 @@ from .models import (
     RiskDecision,
     SwingCandidate,
     TechnicalThesis,
-    TradeThesis,
     TradeProposal,
+    TradeThesis,
 )
 from .protection import ProtectionEvidence, verify_broker_bracket
 from .reconciliation import BrokerReconciler

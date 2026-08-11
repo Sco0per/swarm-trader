@@ -93,8 +93,12 @@ def _filled_trade(settings, database, proposal, candidate, quote):
 
 def test_filled_bracket_is_immediately_protected_and_thesis_is_immutable(settings, database, proposal, candidate, quote):
     _, _, result = _filled_trade(settings, database, proposal, candidate, quote)
-    assert database.get_position_lifecycle(result.trade_id)["state"] == "PROTECTED"
+    assert result.trade_id is not None
+    persisted_lifecycle = database.get_position_lifecycle(result.trade_id)
+    assert persisted_lifecycle is not None
+    assert persisted_lifecycle["state"] == "PROTECTED"
     thesis = database.get_trade_thesis(result.trade_id)
+    assert thesis is not None
     assert thesis.ticker == "XYZ"
     assert thesis.initial_stop == 96
     with pytest.raises(database.integrity_errors):
@@ -105,6 +109,7 @@ def test_filled_bracket_is_immediately_protected_and_thesis_is_immutable(setting
 
 def test_every_canonical_lifecycle_transition_is_persisted(settings, database, proposal, candidate, quote):
     _, _, result = _filled_trade(settings, database, proposal, candidate, quote)
+    assert result.trade_id is not None
     lifecycle = PositionLifecycleService(settings, database)
     lifecycle.transition(result.trade_id, PositionLifecycleState.PROFITABLE, trigger="one_r", reason_code="PROFITABLE_TRIGGER")
     lifecycle.transition(result.trade_id, PositionLifecycleState.TRAILING, trigger="policy", reason_code="TRAILING_TRIGGER")
@@ -117,6 +122,7 @@ def test_every_canonical_lifecycle_transition_is_persisted(settings, database, p
 
 def test_restart_recovers_mid_lifecycle_from_durable_state(settings, database, proposal, candidate, quote):
     _, _, result = _filled_trade(settings, database, proposal, candidate, quote)
+    assert result.trade_id is not None
     PositionLifecycleService(settings, database).transition(
         result.trade_id,
         PositionLifecycleState.PROFITABLE,
@@ -125,8 +131,12 @@ def test_restart_recovers_mid_lifecycle_from_durable_state(settings, database, p
     )
     reopened = SwingDatabase(settings.database_path)
     reopened.initialize(settings.strategy_version)
-    assert reopened.get_position_lifecycle(result.trade_id)["state"] == "PROFITABLE"
-    assert reopened.get_trade_thesis(result.trade_id).ticker == "XYZ"
+    persisted_lifecycle = reopened.get_position_lifecycle(result.trade_id)
+    assert persisted_lifecycle is not None
+    assert persisted_lifecycle["state"] == "PROFITABLE"
+    thesis = reopened.get_trade_thesis(result.trade_id)
+    assert thesis is not None
+    assert thesis.ticker == "XYZ"
 
 
 ILLEGAL_TRANSITIONS = [(old, new) for old in PositionLifecycleState for new in PositionLifecycleState if new != old and new not in LEGAL_TRANSITIONS[old]]

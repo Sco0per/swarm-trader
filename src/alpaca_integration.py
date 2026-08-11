@@ -16,12 +16,9 @@ Read helpers (get_alpaca_account, get_alpaca_positions, ...) are safe to call.
 The optional `mode` parameter is legacy and must be "swing" or None.
 """
 
-import os
-from datetime import datetime
-
 import requests
 
-from src.accounts import AlpacaAccount, get_account_for_mode
+from src.accounts import get_account_for_mode
 
 # Always paper trading - never use live endpoint
 ALPACA_BASE_URL = "https://paper-api.alpaca.markets/v2"

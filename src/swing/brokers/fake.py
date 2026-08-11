@@ -6,7 +6,14 @@ from datetime import datetime, timezone
 from threading import Lock
 from uuid import uuid4
 
-from ..models import AccountSnapshot, BrokerAsset, BrokerOrder, OrderIntent, Position, Quote
+from ..models import (
+    AccountSnapshot,
+    BrokerAsset,
+    BrokerOrder,
+    OrderIntent,
+    Position,
+    Quote,
+)
 from .base import BrokerProvider
 
 
@@ -14,8 +21,13 @@ class FakeBrokerProvider(BrokerProvider):
     name = "fake-paper"
 
     def __init__(
-        self, *, equity: float = 2_000, cash: float = 2_000, positions: list[Position] | None = None,
-        quotes: dict[str, Quote] | None = None, open_orders: list[dict] | None = None,
+        self,
+        *,
+        equity: float = 2_000,
+        cash: float = 2_000,
+        positions: list[Position] | None = None,
+        quotes: dict[str, Quote] | None = None,
+        open_orders: list[dict] | None = None,
         assets: dict[str, BrokerAsset] | None = None,
     ):
         self.account = AccountSnapshot(account_id="fake-agentic-paper", equity=equity, cash=cash, buying_power=cash, is_paper=True)
@@ -59,9 +71,15 @@ class FakeBrokerProvider(BrokerProvider):
         return rows
 
     def get_asset(self, symbol: str) -> BrokerAsset:
-        return self.assets.get(symbol.upper(), BrokerAsset(
-            symbol=symbol.upper(), asset_class="us_equity", tradable=True, status="active",
-        )).model_copy(deep=True)
+        return self.assets.get(
+            symbol.upper(),
+            BrokerAsset(
+                symbol=symbol.upper(),
+                asset_class="us_equity",
+                tradable=True,
+                status="active",
+            ),
+        ).model_copy(deep=True)
 
     def get_quote(self, symbol: str) -> Quote:
         if symbol.upper() not in self.quotes:
@@ -84,8 +102,12 @@ class FakeBrokerProvider(BrokerProvider):
             if self.raise_on_place:
                 raise self.raise_on_place
             order = BrokerOrder(
-                broker_order_id=str(uuid4()), intent_id=intent.intent_id, symbol=intent.ticker, side=intent.side,
-                quantity=intent.quantity, status=self.next_status,
+                broker_order_id=str(uuid4()),
+                intent_id=intent.intent_id,
+                symbol=intent.ticker,
+                side=intent.side,
+                quantity=intent.quantity,
+                status=self.next_status,
                 filled_quantity=self.next_filled_quantity,
                 average_fill_price=self.next_average_fill_price,
                 raw={
@@ -96,7 +118,9 @@ class FakeBrokerProvider(BrokerProvider):
                     "legs": [
                         {"id": f"stop-{intent.intent_id}", "side": "sell", "type": "stop", "stop_price": intent.stop_price, "status": "rejected" if self.reject_stop_leg else "new"},
                         {"id": f"target-{intent.intent_id}", "side": "sell", "type": "limit", "limit_price": intent.target_price, "status": "rejected" if self.reject_target_leg else "new"},
-                    ] if self.next_filled_quantity > 0 else [],
+                    ]
+                    if self.next_filled_quantity > 0
+                    else [],
                 },
             )
             self.orders[order.broker_order_id] = order
@@ -130,8 +154,13 @@ class FakeBrokerProvider(BrokerProvider):
         position = next(position for position in self.positions if position.symbol == symbol)
         self.positions = [item for item in self.positions if item.symbol != symbol]
         return BrokerOrder(
-            broker_order_id=str(uuid4()), intent_id=f"close-{uuid4()}", symbol=symbol, side="sell",
-            quantity=abs(position.quantity), status="accepted", submitted_at=datetime.now(timezone.utc),
+            broker_order_id=str(uuid4()),
+            intent_id=f"close-{uuid4()}",
+            symbol=symbol,
+            side="sell",
+            quantity=abs(position.quantity),
+            status="accepted",
+            submitted_at=datetime.now(timezone.utc),
         )
 
     def get_order_status(self, broker_order_id: str) -> BrokerOrder:

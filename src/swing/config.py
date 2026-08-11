@@ -384,14 +384,8 @@ def load_settings() -> SwingSettings:
         profitable_trigger_r=_float("PROFITABLE_TRIGGER_R", 1.0),
         trailing_activation_r=_float("TRAILING_ACTIVATION_R", 2.0),
         trailing_distance_r=_float("TRAILING_DISTANCE_R", 0.75),
-        move_to_breakeven_at_r=(
-            _float("MOVE_TO_BREAKEVEN_AT_R", 0.0) if os.getenv("MOVE_TO_BREAKEVEN_AT_R") not in (None, "") else None
-        ),
-        trailing_eligible_setups=tuple(
-            value.strip().upper()
-            for value in os.getenv("TRAILING_ELIGIBLE_SETUPS", "TREND_PULLBACK,RELATIVE_STRENGTH_CONTINUATION").split(",")
-            if value.strip()
-        ),
+        move_to_breakeven_at_r=(_float("MOVE_TO_BREAKEVEN_AT_R", 0.0) if os.getenv("MOVE_TO_BREAKEVEN_AT_R") not in (None, "") else None),
+        trailing_eligible_setups=tuple(value.strip().upper() for value in os.getenv("TRAILING_ELIGIBLE_SETUPS", "TREND_PULLBACK,RELATIVE_STRENGTH_CONTINUATION").split(",") if value.strip()),
         cooldown_trading_days=_int("COOLDOWN_TRADING_DAYS", 10),
         minimum_statistical_sample=_int("MINIMUM_STATISTICAL_SAMPLE", 30),
         maximum_scanner_candidates=_int("MAXIMUM_SCANNER_CANDIDATES", 20),

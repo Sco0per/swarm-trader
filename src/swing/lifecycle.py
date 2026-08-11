@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from .config import SwingSettings
 from .database import SwingDatabase
-from .models import PositionLifecycleState, SetupType, TimeStopAction, TradeThesis
+from .models import PositionLifecycleState, TimeStopAction, TradeThesis
 
 LEGAL_TRANSITIONS: dict[PositionLifecycleState, frozenset[PositionLifecycleState]] = {
     PositionLifecycleState.OPEN: frozenset({PositionLifecycleState.PROTECTED, PositionLifecycleState.EXIT_PENDING}),

@@ -101,7 +101,11 @@ def test_record_live_fill_requires_and_consumes_deterministic_ticket_with_protec
     database = SwingDatabase(database_path)
     trades = database.open_trades()
     assert len(trades) == 1
-    assert database.get_trade_thesis(trades[0]["trade_id"]).ticker == "XYZ"
-    assert database.get_position_lifecycle(trades[0]["trade_id"])["state"] == "PROTECTED"
+    thesis = database.get_trade_thesis(trades[0]["trade_id"])
+    assert thesis is not None
+    assert thesis.ticker == "XYZ"
+    persisted_lifecycle = database.get_position_lifecycle(trades[0]["trade_id"])
+    assert persisted_lifecycle is not None
+    assert persisted_lifecycle["state"] == "PROTECTED"
     with pytest.raises(ValueError, match="No unused deterministic live-ticket approval"):
         cli_module.main()

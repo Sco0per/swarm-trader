@@ -12,7 +12,6 @@ Usage:
 """
 
 import argparse
-import json
 import os
 import sys
 from datetime import datetime
@@ -22,7 +21,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from src.config import get_mode_config, resolve_mode
+from src.config import get_mode_config, resolve_mode  # noqa: E402
 
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
 ALPACA_API_SECRET = os.getenv("ALPACA_API_SECRET", "")
@@ -90,7 +89,7 @@ def main():
     dry_run = not args.execute
 
     print(f"{'='*60}")
-    print(f"  PORTFOLIO REBALANCER")
+    print("  PORTFOLIO REBALANCER")
     print(f"  Mode: {mode.upper()} — {mode_label}")
     print(f"  Universe ({len(universe_tickers)} tickers): {', '.join(sorted(universe_tickers))}")
     print(f"  Action: {'EXECUTE' if args.execute else 'DRY RUN (add --execute to trade)'}")
@@ -152,7 +151,7 @@ def main():
     else:
         print(f"✅ {len(successful)} order(s) placed, ❌ {len(failed)} failed")
         if successful:
-            print(f"Capital will be freed at next market fill.")
+            print("Capital will be freed at next market fill.")
     print("=" * 60)
 
     return 0

@@ -31,7 +31,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from ..models import AccountSnapshot, BrokerAsset, BrokerOrder, OrderIntent, Position, Quote
+from ..models import (
+    AccountSnapshot,
+    BrokerAsset,
+    BrokerOrder,
+    OrderIntent,
+    Position,
+    Quote,
+)
 from .base import BrokerProvider, BrokerUnavailable
 
 
@@ -43,11 +50,7 @@ class HumanSuppliedBrokerProvider(BrokerProvider):
     def __init__(self, snapshot: dict[str, Any]):
         account = snapshot["account"]
         if account.get("dedicated_agentic_account") is not True:
-            raise ValueError(
-                "snapshot['account']['dedicated_agentic_account'] must be explicitly true; this "
-                "framework must never compute sizing against any account other than the dedicated "
-                "Robinhood Agentic account"
-            )
+            raise ValueError("snapshot['account']['dedicated_agentic_account'] must be explicitly true; this " "framework must never compute sizing against any account other than the dedicated " "Robinhood Agentic account")
         if account.get("is_paper", False):
             raise ValueError("Robinhood has no paper mode; snapshot['account']['is_paper'] must be false")
         self._account = AccountSnapshot(
@@ -128,11 +131,7 @@ class HumanSuppliedBrokerProvider(BrokerProvider):
         }
 
     def _blocked(self, *_args, **_kwargs):
-        raise BrokerUnavailable(
-            "Live order placement is intentionally never automated by this framework. Execute the "
-            "printed ticket yourself through a Claude session with the Robinhood MCP connected, then "
-            "journal the real fill with `swing-trader record-live-fill`."
-        )
+        raise BrokerUnavailable("Live order placement is intentionally never automated by this framework. Execute the " "printed ticket yourself through a Claude session with the Robinhood MCP connected, then " "journal the real fill with `swing-trader record-live-fill`.")
 
     place_order = _blocked
     cancel_order = _blocked

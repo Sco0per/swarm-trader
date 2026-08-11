@@ -34,11 +34,10 @@ import os
 import sys
 from datetime import datetime
 
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
-
-import requests
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,7 +46,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("execute_trades")
 
-from src.accounts import get_account_for_mode
+from src.accounts import get_account_for_mode  # noqa: E402
 
 API_BASE = "https://paper-api.alpaca.markets/v2"
 DATA_BASE = "https://data.alpaca.markets/v2"
@@ -61,12 +60,12 @@ def _headers() -> dict:
     return get_account_for_mode(_active_mode).headers
 
 
-from src.config import DEFAULT_TARGET_MULTIPLIER, get_mode_config
+from src.config import DEFAULT_TARGET_MULTIPLIER, get_mode_config  # noqa: E402
 
 # V2 risk manager — validates every BUY before execution
 try:
-    from risk_manager import get_portfolio_state as rm_get_portfolio_state
-    from risk_manager import validate_trade as rm_validate_trade
+    from risk_manager import get_portfolio_state as rm_get_portfolio_state  # noqa: E402
+    from risk_manager import validate_trade as rm_validate_trade  # noqa: E402
 
     RISK_MANAGER_AVAILABLE = True
     log.info("V2 risk manager loaded")

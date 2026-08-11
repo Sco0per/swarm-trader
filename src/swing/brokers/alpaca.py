@@ -7,7 +7,14 @@ from typing import Any
 
 import requests
 
-from ..models import AccountSnapshot, BrokerAsset, BrokerOrder, OrderIntent, Position, Quote
+from ..models import (
+    AccountSnapshot,
+    BrokerAsset,
+    BrokerOrder,
+    OrderIntent,
+    Position,
+    Quote,
+)
 from .base import BrokerProvider, BrokerUnavailable
 
 
@@ -33,9 +40,13 @@ class AlpacaPaperProvider(BrokerProvider):
     def get_account(self) -> AccountSnapshot:
         raw = self._request("GET", f"{self.TRADING_BASE}/account")
         return AccountSnapshot(
-            account_id=str(raw["id"]), equity=float(raw["equity"]), cash=max(0, float(raw["cash"])),
-            buying_power=max(0, float(raw["buying_power"])), is_paper=True,
-            is_margin_enabled=float(raw.get("multiplier", 1) or 1) > 1, dedicated_agentic_account=None,
+            account_id=str(raw["id"]),
+            equity=float(raw["equity"]),
+            cash=max(0, float(raw["cash"])),
+            buying_power=max(0, float(raw["buying_power"])),
+            is_paper=True,
+            is_margin_enabled=float(raw.get("multiplier", 1) or 1) > 1,
+            dedicated_agentic_account=None,
         )
 
     def get_buying_power(self) -> float:
@@ -43,10 +54,17 @@ class AlpacaPaperProvider(BrokerProvider):
 
     def get_positions(self) -> list[Position]:
         rows = self._request("GET", f"{self.TRADING_BASE}/positions")
-        return [Position(
-            symbol=row["symbol"], quantity=float(row["qty"]), average_entry_price=float(row["avg_entry_price"]),
-            current_price=float(row["current_price"]), market_value=float(row["market_value"]), side=row.get("side", "long"),
-        ) for row in rows]
+        return [
+            Position(
+                symbol=row["symbol"],
+                quantity=float(row["qty"]),
+                average_entry_price=float(row["avg_entry_price"]),
+                current_price=float(row["current_price"]),
+                market_value=float(row["market_value"]),
+                side=row.get("side", "long"),
+            )
+            for row in rows
+        ]
 
     def get_open_orders(self) -> list[dict]:
         rows = self._request("GET", f"{self.TRADING_BASE}/orders", params={"status": "open", "nested": "true"})
@@ -73,9 +91,13 @@ class AlpacaPaperProvider(BrokerProvider):
         quote = raw.get("quote", raw)
         timestamp = datetime.fromisoformat(str(quote["t"]).replace("Z", "+00:00"))
         return Quote(
-            symbol=symbol, bid=float(quote["bp"]), ask=float(quote["ap"]),
+            symbol=symbol,
+            bid=float(quote["bp"]),
+            ask=float(quote["ap"]),
             last=(float(quote["bp"]) + float(quote["ap"])) / 2,
-            source="alpaca", retrieved_at=datetime.now(timezone.utc), market_timestamp=timestamp,
+            source="alpaca",
+            retrieved_at=datetime.now(timezone.utc),
+            market_timestamp=timestamp,
         )
 
     def review_order(self, intent: OrderIntent) -> dict:
@@ -95,8 +117,13 @@ class AlpacaPaperProvider(BrokerProvider):
 
     def place_order(self, intent: OrderIntent) -> BrokerOrder:
         payload = {
-            "symbol": intent.ticker, "qty": str(intent.quantity), "side": "buy", "type": "limit",
-            "limit_price": str(round(intent.limit_price, 2)), "time_in_force": "gtc", "order_class": "bracket",
+            "symbol": intent.ticker,
+            "qty": str(intent.quantity),
+            "side": "buy",
+            "type": "limit",
+            "limit_price": str(round(intent.limit_price, 2)),
+            "time_in_force": "gtc",
+            "order_class": "bracket",
             "take_profit": {"limit_price": str(round(intent.target_price, 2))},
             "stop_loss": {"stop_price": str(round(intent.stop_price, 2))},
             "client_order_id": intent.intent_id[:48],
@@ -107,10 +134,16 @@ class AlpacaPaperProvider(BrokerProvider):
     def _order(self, raw: dict, intent_id: str) -> BrokerOrder:
         submitted = raw.get("submitted_at")
         return BrokerOrder(
-            broker_order_id=str(raw["id"]), intent_id=intent_id, symbol=raw["symbol"], side=raw["side"],
-            quantity=float(raw.get("qty") or 0), status=raw["status"], filled_quantity=float(raw.get("filled_qty") or 0),
+            broker_order_id=str(raw["id"]),
+            intent_id=intent_id,
+            symbol=raw["symbol"],
+            side=raw["side"],
+            quantity=float(raw.get("qty") or 0),
+            status=raw["status"],
+            filled_quantity=float(raw.get("filled_qty") or 0),
             average_fill_price=float(raw["filled_avg_price"]) if raw.get("filled_avg_price") else None,
-            submitted_at=datetime.fromisoformat(submitted.replace("Z", "+00:00")) if submitted else datetime.now(timezone.utc), raw=raw,
+            submitted_at=datetime.fromisoformat(submitted.replace("Z", "+00:00")) if submitted else datetime.now(timezone.utc),
+            raw=raw,
         )
 
     def cancel_order(self, broker_order_id: str) -> bool:

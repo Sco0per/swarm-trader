@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 
 from .models import BrokerOrder, OrderIntent
 
-
 TERMINAL_BAD_LEG_STATUSES = {"rejected", "canceled", "cancelled", "expired", "stopped", "suspended"}
 
 
