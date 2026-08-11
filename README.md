@@ -51,6 +51,103 @@ Code-level remediation is complete and the local suite passes, but paper-account
 
 Key documentation: [architecture](docs/ADAPTIVE_SWING_ARCHITECTURE.md), [remediation status](docs/REMEDIATION_STATUS.md), [risk model](docs/RISK_MODEL.md), [learning engine](docs/LEARNING_ENGINE.md), [swing AutoResearch](docs/AUTORESEARCH_SWING.md), [broker providers](docs/BROKER_PROVIDERS.md), and [experiment protocol](docs/EXPERIMENT_PROTOCOL.md).
 
+## How the Framework Works
+
+### Design pattern: code is the risk authority, models only advise
+
+Every decision that can lose money is made by deterministic Python, not an
+LLM. Models (`src/swing/agents.py`, `src/swing/llm_backend.py`) only ever
+produce *structured proposals* — a candidate ticker, a setup type, a bull/bear
+case — never a final "do it." Every proposal passes through
+`src/swing/risk.py` and `src/swing/execution.py` before anything reaches a
+broker, and those modules enforce hard, config-validated ceilings (position
+size, sector exposure, daily/weekly entry limits, drawdown and loss-streak
+halts, a global kill switch) that no prompt or model output can weaken —
+`src/swing/config.py`'s `SwingSettings.__post_init__` actively rejects
+startup if any risk parameter is configured looser than its immutable floor.
+If a model's role has no configured backend, or returns something that
+doesn't validate against its schema, the result is `NO_TRADE` — never a
+fallback guess.
+
+This produces one linear pipeline, run in order, every time:
+
+```
+Alpaca (bars) + yfinance (earnings, bounded timeout)
+    │
+    ▼
+DeterministicSwingScanner            src/swing/market.py
+  scores the universe purely on math — trend, relative
+  strength, volume, setup quality, event risk — no LLM here
+    │
+    ▼
+AgentPipeline                        src/swing/agents.py
+  only the candidates that already cleared the score
+  threshold get LLM analysis: technical + fundamental reads,
+  a bull case, a bear case, a portfolio-manager verdict
+    │
+    ▼
+SwingRiskManager + SwingExecutionService   risk.py / execution.py
+  re-checks kill switch / halts / position limits / open-risk
+  from the database on every single call — sizes the position,
+  sets the hard stop and target, rejects anything over a ceiling
+    │
+    ▼
+Broker
+  Alpaca (paper) → autonomous, no human step
+  Robinhood (live) → human-supervised only, see below
+```
+
+### The daily agent fleet
+
+Rather than one script doing everything, the daily cycle is split into five
+independent scheduled cloud agents ("routines"), each with one job and its
+own schedule (see `docs/CRON_AGENTS.md` for the full rationale and known
+limitations):
+
+| Agent | Runs | Job |
+|---|---|---|
+| **scan-agent** | 9:35am ET, weekdays | Pure market scan — finds candidates, no LLM calls, no orders |
+| **decide-trade-agent** | 10:03am ET, weekdays | Re-scans, runs LLM analysis, submits paper orders if `TRADING_ENABLED=true` |
+| **reconcile-agent** | 3:55pm ET, weekdays | Confirms Alpaca's broker state matches the journal; halts on any mismatch |
+| **report-agent** | 4:15pm ET, weekdays | Reads the day's state and writes a daily report |
+| **lessons-agent** | Sundays | Aggregates closed-trade postmortems into candidate research hypotheses — never auto-validates |
+
+Splitting it this way means a failure in one step (say, a broker hiccup
+during reconciliation) can't silently corrupt or block an unrelated step
+(the next day's scan), and each agent's blast radius is limited to exactly
+the one `swing-trader` subcommand it's allowed to run — every agent's prompt
+explicitly lists every *other* command as forbidden.
+
+### State: a hosted database, not git
+
+Each agent fires in a fresh, disposable cloud sandbox with no persistent
+disk — nothing survives between runs except by leaving the sandbox somehow.
+`SwingDatabase` (`src/swing/database.py`) solves this by connecting to a
+hosted Turso (libSQL) database when `TURSO_DATABASE_URL` is set, so every
+`swing-trader` command reads and writes live, shared state directly — the
+kill switch, drawdown/loss-streak halts, the full trade journal, candidate
+scores, and postmortem lessons all persist automatically with no separate
+save step. (Locally, with that variable unset, it falls back to a plain
+SQLite file — local development and the test suite never touch Turso.) An
+earlier design tried committing the database file back to git after every
+run instead; that turned out not to work at all, since cloud routine
+sessions have no functioning git-push credentials regardless of file size —
+see `docs/CRON_AGENTS.md` for the full story.
+
+### Live trading is human-supervised by design, not by accident
+
+`decide-trade-agent` can run completely unattended — but only against
+Alpaca's **paper** account. Real-money execution goes through a deliberately
+different, non-automatable path: `swing-trader live-ticket` runs the exact
+same risk engine against a human-typed real account snapshot and prints an
+approved order ticket; a human then places that order themselves in the
+Robinhood app, and `record-live-fill`/`record-live-exit` journal what
+actually happened afterward. Nothing in this codebase calls a live
+order-placement endpoint, and the daily routines never have Robinhood's MCP
+connector attached — see [docs/ROBINHOOD_MCP.md](docs/ROBINHOOD_MCP.md) for
+why that boundary exists and stays fixed even though the integration is
+technically capable of more.
+
 ## Legacy Reference Below — Non-operational
 
 Everything below this heading describes the imported predecessor and is retained only for provenance. Its commands, day/short modes, risk numbers, monitors, and cron examples are not supported operating instructions. Use only the adaptive swing commands above and the current checklist.
