@@ -1,3 +1,8 @@
+> **QUARANTINED — intraday-derived, NOT swing-validated.** This document describes
+> the repository's earlier intraday day-trading experiment. It is historical
+> reference only and must never feed production configuration. See
+> [autoresearch/README.md](README.md).
+
 # AutoResearch → Cassius Bridge: Design Doc
 
 *Connecting the lab to the trading floor.*

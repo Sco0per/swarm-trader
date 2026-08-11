@@ -1,3 +1,6 @@
+# QUARANTINED — intraday-derived, NOT swing-validated. Must never feed production
+# configuration. No src/swing module imports this. See autoresearch/README.md.
+
 # EXPERIMENT: selective_market_alignment
 # HYPOTHESIS: Current fitness=10.0739 with exceptional 88% win rate shows outstanding signal quality, but most parameters have reached diminishing returns. The SPY/QQQ market alignment thresholds (currently 0.3%) haven't been optimized recently. With such excellent signal quality, making alignment criteria more selective by raising from 0.3% to 0.4% should improve risk-adjusted metrics (Sharpe 35% + Sortino 25% = 60% fitness weight) by only applying confidence bonuses during stronger market moves, enhancing signal selectivity without disrupting the proven core performance.
 # CHANGE: Increase SPY/QQQ market alignment threshold from 0.3% to 0.4%

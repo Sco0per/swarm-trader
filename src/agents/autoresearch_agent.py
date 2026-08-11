@@ -1,4 +1,11 @@
-"""AutoResearch Agent — deterministic signals from the evolved strategy.
+"""LEGACY AutoResearch Agent — deterministic signals from the evolved strategy.
+
+QUARANTINE NOTE: this is the ONLY bridge between the quarantined, intraday-derived
+`autoresearch/` directory and the rest of the repository, and it belongs to the
+legacy LangGraph personality-swarm app (`src/main.py`), not the swing production
+path. No module under `src/swing/` imports this agent or `autoresearch/`.
+`autoresearch/strategy.py` is not swing-validated and must never feed production
+configuration — see `autoresearch/README.md`.
 
 This agent wraps autoresearch/strategy.py as a first-class analyst in the
 multi-agent committee.  Unlike every other analyst, it makes ZERO LLM calls.

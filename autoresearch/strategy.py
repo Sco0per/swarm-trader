@@ -1,3 +1,6 @@
+# QUARANTINED — intraday-derived, NOT swing-validated. Must never feed production
+# configuration. No src/swing module imports this. See autoresearch/README.md.
+
 # EXPERIMENT: vwap_threshold_tighten
 # HYPOTHESIS: Current fitness=10.0740 with exceptional 91.3% win rate shows outstanding signal quality. Most core parameters have reached diminishing returns through extensive testing. VWAP component has significant 30% confidence weight (second highest) but VWAP_NEAR_BAND_PCT hasn't been optimized recently. With such proven selectivity, reducing from 0.90% to 0.85% should narrow the neutral zone and allow price deviations of 0.85%-0.90% to contribute directional signals, potentially improving signal frequency and total returns (20% fitness weight) while the exceptional win rate provides cushion.
 # CHANGE: Reduce VWAP_NEAR_BAND_PCT from 0.90% to 0.85%

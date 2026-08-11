@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# QUARANTINED — intraday-derived, NOT swing-validated. Must never feed production
+# configuration. No src/swing module imports this. See autoresearch/README.md.
+
 """
 backtest_fast.py — Deterministic backtester for strategy.py.
 

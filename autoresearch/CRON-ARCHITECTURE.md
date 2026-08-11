@@ -1,3 +1,8 @@
+> **QUARANTINED — intraday-derived, NOT swing-validated.** This document describes
+> the repository's earlier intraday day-trading experiment. It is historical
+> reference only and must never feed production configuration. See
+> [autoresearch/README.md](README.md).
+
 # Autoresearch Cron Architecture — Token Optimization Pattern
 
 *How Mordecai restructured the autoresearch cron to eliminate LLM timeouts and cut orchestrator costs by ~99%.*
