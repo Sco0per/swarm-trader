@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -194,17 +195,41 @@ def _approx_trading_days_until(target: date, today: date) -> int:
     return days
 
 
+EARNINGS_LOOKUP_TIMEOUT_SECONDS = 8
+
+
 def fetch_earnings_trading_days(symbol: str) -> int | None:
-    """Approximate trading days until the next known earnings date, or None if unknown."""
+    """Approximate trading days until the next known earnings date, or None if unknown.
+
+    Bounded by EARNINGS_LOOKUP_TIMEOUT_SECONDS via a worker thread: yfinance
+    doesn't reliably honor its own timeout when the underlying connection
+    hangs (rather than erroring immediately) instead of failing outright,
+    which turned a single blocked call into a many-minute scan when tried
+    from a cloud environment Yahoo was throttling. A slow, silent hang is
+    worse than a fast None here -- the caller already treats both the same.
+    """
     cached = _cache_get("earnings", symbol, EARNINGS_CACHE_TTL_SECONDS)
     if cached is not None:
         return cached.get("trading_days")
     yf = _yf()
-    try:
-        calendar = yf.Ticker(symbol).get_earnings_dates(limit=4)
-    except Exception:
+
+    outcome: dict = {}
+
+    def _lookup():
+        try:
+            outcome["calendar"] = yf.Ticker(symbol).get_earnings_dates(limit=4)
+        except Exception:
+            pass
+
+    thread = threading.Thread(target=_lookup, daemon=True)
+    thread.start()
+    thread.join(timeout=EARNINGS_LOOKUP_TIMEOUT_SECONDS)
+    if "calendar" not in outcome:
+        # Either it raised or it's still hung past the deadline -- the thread
+        # is daemonized so an abandoned hang won't block process exit.
         _cache_set("earnings", symbol, {"trading_days": None})
         return None
+    calendar = outcome["calendar"]
     index = getattr(calendar, "index", None)
     if calendar is None or index is None or len(index) == 0:
         _cache_set("earnings", symbol, {"trading_days": None})
