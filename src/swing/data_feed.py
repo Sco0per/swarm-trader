@@ -65,7 +65,8 @@ def _alpaca_headers() -> dict[str, str]:
 def _alpaca_get(path: str, params: dict) -> dict:
     """Thin, mockable seam over the Alpaca data API -- tests monkeypatch this."""
     response = requests.get(f"{ALPACA_DATA_BASE}{path}", headers=_alpaca_headers(), params=params, timeout=30)
-    response.raise_for_status()
+    if not response.ok:
+        raise RuntimeError(f"Alpaca data API {response.status_code} for {path}: {response.text[:500]}")
     return response.json()
 
 
@@ -121,14 +122,11 @@ def _fetch_alpaca_bars_batch(symbols: list[str], *, start: str, end: str) -> dic
     while True:
         params = {
             "symbols": ",".join(symbols), "timeframe": "1Day", "start": start, "end": end,
-            "limit": 10000, "adjustment": "all",
+            "limit": 10000, "adjustment": "all", "feed": "iex",
         }
         if page_token:
             params["page_token"] = page_token
-        try:
-            payload = _alpaca_get("/stocks/bars", params)
-        except Exception:
-            break
+        payload = _alpaca_get("/stocks/bars", params)
         for symbol, rows in (payload.get("bars") or {}).items():
             rows_by_symbol.setdefault(symbol, []).extend(rows)
         page_token = payload.get("next_page_token")
