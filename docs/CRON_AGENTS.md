@@ -48,7 +48,7 @@ Turso's free tier (5GB storage, 500M row reads/month, 10M row writes/month)
 is far beyond what this system needs — a handful of routine runs a day, each
 doing lightweight reads/writes, is nowhere close to those limits.
 
-## The five routines
+## The seven narrow routines
 
 Each routine runs exactly one `swing-trader` subcommand. None of them touch
 the Robinhood live-trading path (`live-ticket`, `record-live-fill`,
@@ -58,13 +58,26 @@ routines (routine creation auto-attaches every connected MCP connector by
 default — always `clear_mcp_connections: true` immediately after creating
 one, or it will silently gain live-order-placement tools).
 
-| # | Name | Cron (UTC) | ET (approx, EDT) | Command | Needs |
-|---|------|-----------|-------------------|---------|-------|
-| 1 | scan-agent | `35 13 * * 1-5` | 9:35am | `scan` | Turso only (no LLM, no broker) |
-| 2 | decide-trade-agent | `3 14 * * 1-5` | 10:03am | `run` | `ANTHROPIC_API_KEY`, `ALPACA_API_KEY`, `ALPACA_API_SECRET`, Turso |
-| 3 | reconcile-agent | `55 19 * * 1-5` | 3:55pm | `reconcile` | `ALPACA_API_KEY`, `ALPACA_API_SECRET`, Turso |
-| 4 | report-agent | `15 20 * * 1-5` | 4:15pm | `report daily` | Turso only |
-| 5 | lessons-agent | `7 22 * * 0` | Sun 6:07pm | `review-observations` | Turso only |
+Use an `America/New_York` timezone-aware scheduler, not fixed UTC expressions.
+The environment keys below make every time configurable without changing code.
+
+| # | Name | Configured ET default | Command | Needs |
+|---|------|-----------------------|---------|-------|
+| 1 | initial-scan-agent | `SCHEDULE_INITIAL_SCAN_ET=09:35` weekdays | `scan` | Turso + deterministic market data; no LLM |
+| 2 | decision-cycle-agent | `SCHEDULE_DECISION_CYCLE_ET=10:15` weekdays | `run` | model, paper broker, market data, Turso |
+| 3 | midday-refresh-agent | `SCHEDULE_MIDDAY_REFRESH_ET=12:30` weekdays | `scan` | Turso + deterministic market data; no LLM |
+| 4 | afternoon-refresh-agent | `SCHEDULE_AFTERNOON_REFRESH_ET=14:30` weekdays | `scan` | Turso + deterministic market data; no LLM |
+| 5 | position-health-agent | `SCHEDULE_POSITION_HEALTH_ET=15:45` weekdays | `reconcile` | paper broker + Turso; no candidate LLM |
+| 6 | daily-report-agent | `SCHEDULE_DAILY_REPORT_ET=16:15` weekdays | `report daily` | Turso only |
+| 7 | weekly-lessons-agent | `SCHEDULE_WEEKLY_LESSONS_ET=Sunday 18:00` | `review-observations` | Turso only |
+
+Each agent prompt is generated from `src/swing/scheduling.py`. It permits its
+single listed subcommand and explicitly forbids every other shell command and
+all live/broker mutation subcommands. The scan refreshes never call an LLM.
+The decision cycle reuses a stored schema-valid response unless the candidate
+is new, its score changes by `LLM_MATERIAL_SCORE_CHANGE`, its setup/regime or
+event/news digest changes, or a prompt/model version changes. Every decision
+cycle persists actual and suppressed call counts.
 
 `TRADING_ENABLED` is deliberately **not** set, matching `src/swing/config.py`'s
 fail-closed default (`trading_enabled: bool = False`). Until it's explicitly
@@ -72,7 +85,7 @@ set to `true` in the cloud environment, `decide-trade-agent` will compute and
 log full proposals every day but submit nothing — a rehearsal period before
 real (paper) orders go out. Flip it on when you're satisfied watching it.
 
-All 5 routines run their orchestration on **Haiku 4.5**, not Sonnet — each
+All seven routines run their orchestration on a cheap fixed-command model — each
 one just runs a fixed CLI command and reports the output, no real reasoning
 required. The actual trading intelligence is a separate set of Anthropic API
 calls the Python code makes directly (`src/swing/llm_backend.py`, governed by
@@ -81,16 +94,11 @@ of the routine's own model.
 
 ## Known limitations
 
-- **`report-agent`'s output file isn't persisted anywhere.** `report daily`
-  writes a markdown file under `reports/` in the ephemeral checkout, which
-  vanishes when the sandbox is torn down — there's no git-push and the file
-  content itself isn't written to the database. The routine's printed output
-  (captured in its run log / push notification) is currently the only
-  durable copy. Worth fixing later, e.g. by having the report content itself
-  land in a database table.
-- **DST**: the UTC offsets above assume EDT (UTC-4). They drift by an hour
-  during EST (roughly early Nov–mid Mar); the cron expressions need a manual
-  ±1h nudge at each DST transition, or update to ET-aware scheduling.
+- Reports are written both to the local artifact path and to the
+  `persisted_reports` table, so an ephemeral checkout does not erase the
+  audited payload.
+- **DST**: the scheduler must use the named `America/New_York` zone. Fixed UTC
+  expressions are prohibited because they shift market-relative jobs twice a year.
 - **Market holidays**: cron doesn't know NYSE is closed on a given Tuesday;
   the commands are expected to degrade gracefully (no candidates / stale-data
   skip) on those days rather than error, but this isn't independently

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .config import SwingSettings
 from .database import SwingDatabase
+from .decision_versioning import fingerprint, PROMPT_VERSIONS
 from .models import (
     Decision,
     LLMReviewDecision,
@@ -96,6 +97,11 @@ class AgentPipeline:
         self.settings = settings
         self.database = database
         self.backend = backend
+        self._cycle_id: str | None = None
+        self._actual_calls = 0
+        self._suppressed_calls = 0
+        self._call_reasons: dict[str, int] = {}
+        self.last_cycle_metrics: dict[str, Any] = {}
 
     def _model(self, role: str) -> str:
         models = self.settings.models
@@ -113,7 +119,53 @@ class AgentPipeline:
     def _call(self, role: str, candidate: SwingCandidate, payload: dict[str, Any], schema: type[SchemaT]) -> SchemaT:
         model_name = self._model(role)
         decision_id = str(uuid4())
+        prompt_version = PROMPT_VERSIONS[role]
+        candidate_key = f"{candidate.ticker}:{candidate.setup_type.value}"
+        material_context = {
+            "ticker": candidate.ticker,
+            "setup_type": candidate.setup_type.value,
+            "market_regime": candidate.market_regime.value,
+            "score_route": candidate.score_route,
+            "validator_failures": candidate.validator_failures,
+            "earnings_trading_days": candidate.earnings_trading_days,
+            "earnings_data_status": candidate.earnings_data_status,
+            "major_event_status": candidate.major_event_status,
+            "material_news_digest": candidate.validator_features.get("material_news_digest"),
+            "event_digest": candidate.validator_features.get("event_digest"),
+        }
+        material_hash = fingerprint(material_context)
+        input_fingerprint = fingerprint(payload)
+        cached = self.database.get_llm_review_state(candidate_key, role, model_name, prompt_version)
+        if cached and cached["material_context_hash"] == material_hash and abs(float(cached["last_score"]) - candidate.score) < self.settings.llm_material_score_change:
+            try:
+                parsed_cached = schema.model_validate(cached["response"])
+                self._suppressed_calls += 1
+                self._call_reasons["UNCHANGED_CANDIDATE"] = self._call_reasons.get("UNCHANGED_CANDIDATE", 0) + 1
+                self.database.record_agent_decision(
+                    decision_id,
+                    role,
+                    self.SCHEMA_VERSION,
+                    parsed_cached.model_dump(mode="json"),
+                    "VALID",
+                    candidate_id=candidate.candidate_id,
+                    model_name=model_name,
+                    decision=getattr(getattr(parsed_cached, "decision", None), "value", None),
+                    strategy_version=self.settings.strategy_version,
+                    config_version=self.settings.config_version,
+                    scanner_version=self.settings.scanner_version,
+                    prompt_version=prompt_version,
+                    input_payload=payload,
+                    input_fingerprint=input_fingerprint,
+                    cycle_id=self._cycle_id,
+                    call_disposition="SUPPRESSED_UNCHANGED",
+                )
+                return parsed_cached
+            except Exception:
+                # Corrupt cache evidence is never trusted; call the model again.
+                pass
         try:
+            self._actual_calls += 1
+            self._call_reasons["NEW_OR_MATERIAL_CHANGE"] = self._call_reasons.get("NEW_OR_MATERIAL_CHANGE", 0) + 1
             result = self.backend.complete(role=role, model_name=model_name, payload=payload, schema=schema)
             parsed = result if isinstance(result, schema) else schema.model_validate(result)
             self.database.record_agent_decision(
@@ -125,6 +177,22 @@ class AgentPipeline:
                 candidate_id=candidate.candidate_id,
                 model_name=model_name,
                 decision=getattr(getattr(parsed, "decision", None), "value", None),
+                strategy_version=self.settings.strategy_version,
+                config_version=self.settings.config_version,
+                scanner_version=self.settings.scanner_version,
+                prompt_version=prompt_version,
+                input_payload=payload,
+                input_fingerprint=input_fingerprint,
+                cycle_id=self._cycle_id,
+            )
+            self.database.save_llm_review_state(
+                candidate_key=candidate_key,
+                role=role,
+                model_name=model_name,
+                prompt_version=prompt_version,
+                score=candidate.score,
+                material_context_hash=material_hash,
+                response=parsed.model_dump(mode="json"),
             )
             return parsed
         except Exception as exc:
@@ -137,6 +205,13 @@ class AgentPipeline:
                 candidate_id=candidate.candidate_id,
                 model_name=model_name,
                 validation_error=str(exc),
+                strategy_version=self.settings.strategy_version,
+                config_version=self.settings.config_version,
+                scanner_version=self.settings.scanner_version,
+                prompt_version=prompt_version,
+                input_payload=payload,
+                input_fingerprint=input_fingerprint,
+                cycle_id=self._cycle_id,
             )
             self.database.record_violation(
                 "llm_schema",
@@ -158,6 +233,11 @@ class AgentPipeline:
 
     def analyze(self, candidates: list[SwingCandidate]) -> list[TradeProposal]:
         """Return schema-valid BUY proposals; no model or invalid output means no trade."""
+        self._cycle_id = str(uuid4())
+        self._actual_calls = 0
+        self._suppressed_calls = 0
+        self._call_reasons = {}
+        self.database.start_llm_cycle(self._cycle_id)
         # A model never gets to review a hard-failed or watchlist-only setup.
         screened = [candidate for candidate in candidates if candidate.score_route in {"strong", "very_strong"} and not candidate.validator_failures]
         screened.sort(key=lambda candidate: (candidate.score_route != "very_strong", -candidate.score, candidate.ticker))
@@ -269,4 +349,16 @@ class AgentPipeline:
                 )
             except Exception:
                 continue
+        self.database.finish_llm_cycle(
+            self._cycle_id,
+            actual_calls=self._actual_calls,
+            suppressed_calls=self._suppressed_calls,
+            reason_counts=self._call_reasons,
+        )
+        self.last_cycle_metrics = {
+            "cycle_id": self._cycle_id,
+            "actual_calls": self._actual_calls,
+            "suppressed_calls": self._suppressed_calls,
+            "reason_counts": dict(self._call_reasons),
+        }
         return proposals

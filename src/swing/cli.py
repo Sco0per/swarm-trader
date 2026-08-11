@@ -15,11 +15,13 @@ from .brokers.human_supervised import HumanSuppliedBrokerProvider
 from .config import load_settings, ROOT
 from .data_feed import load_scan_inputs
 from .database import SCHEMA_VERSION, SwingDatabase
+from .decision_versioning import persist_scan_decisions
 from .execution import SwingExecutionService
 from .lessons_review import review_observations
 from .lifecycle import PositionLifecycleService
 from .llm_backend import AnthropicStructuredBackend
 from .market import DeterministicSwingScanner
+from .measurement import TradeMeasurementService
 from .models import (
     RiskDecision,
     SwingCandidate,
@@ -43,6 +45,48 @@ def _database():
     database = SwingDatabase(settings.database_path)
     database.initialize(settings.strategy_version)
     return settings, database
+
+
+def _journal_open_trade_daily_bars(database: SwingDatabase, bars_by_symbol: dict) -> None:
+    measurements = TradeMeasurementService(database)
+    for trade in database.open_trades():
+        ticker = str(trade["ticker"]).upper()
+        raw = bars_by_symbol.get(ticker)
+        if raw is None:
+            database.record_log(
+                level="WARNING",
+                event="OPEN_TRADE_MEASUREMENT_SKIPPED",
+                reason_code="DAILY_BAR_MISSING",
+                ticker=ticker,
+                trade_id=trade["trade_id"],
+                context={"granularity": "1d"},
+            )
+            continue
+        try:
+            if hasattr(raw, "iloc"):
+                row = raw.iloc[-1]
+                values = {str(key).lower(): value for key, value in row.items()}
+                observed_at = raw.index[-1].to_pydatetime() if hasattr(raw.index[-1], "to_pydatetime") else None
+            else:
+                values = {str(key).lower(): value for key, value in raw[-1].items()}
+                observed_at = None
+            measurements.record_daily_bar(
+                trade["trade_id"],
+                high=float(values["high"]),
+                low=float(values["low"]),
+                close=float(values["close"]),
+                source="deterministic_daily_bar",
+                observed_at=observed_at,
+            )
+        except (KeyError, TypeError, ValueError, IndexError) as exc:
+            database.record_log(
+                level="WARNING",
+                event="OPEN_TRADE_MEASUREMENT_SKIPPED",
+                reason_code="DAILY_BAR_MALFORMED",
+                ticker=ticker,
+                trade_id=trade["trade_id"],
+                context={"error": str(exc), "granularity": "1d"},
+            )
 
 
 def main() -> int:
@@ -160,6 +204,7 @@ def main() -> int:
         print(order.model_dump_json(indent=2))
     elif args.command == "scan":
         inputs = load_scan_inputs(database=database, universe_path=settings.universe_path)
+        _journal_open_trade_daily_bars(database, inputs.bars_by_symbol)
         scanner = DeterministicSwingScanner(settings)
         candidates = scanner.scan(
             inputs.assets,
@@ -169,8 +214,13 @@ def main() -> int:
             sector_bars=inputs.sector_bars,
             source="alpaca",
         )
-        for candidate in candidates:
-            database.record_candidate(candidate)
+        persist_scan_decisions(
+            database,
+            settings,
+            run_id=str(uuid4()),
+            candidates=candidates,
+            funnel_report=getattr(scanner, "last_report", type("EmptyFunnel", (), {"rejections": []})()),
+        )
         print(
             json.dumps(
                 {
@@ -188,6 +238,7 @@ def main() -> int:
         cycle_started_at = datetime.now(timezone.utc).isoformat()
         broker = AlpacaPaperProvider(os.getenv("ALPACA_API_KEY", ""), os.getenv("ALPACA_API_SECRET", ""))
         inputs = load_scan_inputs(database=database, universe_path=settings.universe_path)
+        _journal_open_trade_daily_bars(database, inputs.bars_by_symbol)
         scanner = DeterministicSwingScanner(settings)
         candidates = scanner.scan(
             inputs.assets,
@@ -197,8 +248,14 @@ def main() -> int:
             sector_bars=inputs.sector_bars,
             source="alpaca",
         )
-        for candidate in candidates:
-            database.record_candidate(candidate)
+        scan_run_id = str(uuid4())
+        persist_scan_decisions(
+            database,
+            settings,
+            run_id=scan_run_id,
+            candidates=candidates,
+            funnel_report=getattr(scanner, "last_report", type("EmptyFunnel", (), {"rejections": []})()),
+        )
         backend = _backend_if_configured(database)
         pipeline = AgentPipeline(settings, database, backend) if backend else None
         proposals = pipeline.analyze(candidates) if pipeline else []
@@ -228,6 +285,7 @@ def main() -> int:
                     "llm_backend_configured": backend is not None,
                     "candidates_found": len(candidates),
                     "proposals_generated": len(proposals),
+                    "llm_calls": pipeline.last_cycle_metrics if pipeline else {"actual_calls": 0, "suppressed_calls": 0},
                     "funnel": {
                         **(scanner.last_report.as_dict() if hasattr(scanner, "last_report") else {}),
                         "risk_sizing": database.sizing_rejection_summary(cycle_started_at),
