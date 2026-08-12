@@ -161,21 +161,34 @@ of the routine's own model.
   original local-disk-cache-then-live-fetch behavior -- so it degrades safely
   in local dev (no `database` passed, or no Turso configured) and works from
   a blocked sandbox by reading what the relay already fetched.
-- **`ANTHROPIC_API_KEY` is still not set in this environment, confirmed again
-  via a live direct check on 2026-08-12** (a fast one-off diagnostic job that
-  skips the whole scan and makes a real `anthropic.Anthropic(...).messages.create()`
-  call the same way `src/swing/agents.py` does) -- `llm_backend_configured`
-  reads `false` and every candidate resolves to `NO_TRADE` regardless of
-  score. `MODEL_FALLBACK` *is* set (`claude-haiku-4-5-20251001`), so once the
-  key itself is actually added, model resolution will not be a second
-  blocker. `_backend_if_configured()` in `src/swing/cli.py` does a plain,
-  uncached `os.getenv` presence check each process, so no code change is
-  needed once the key is genuinely present -- verify with the same fast
-  diagnostic pattern (see git history for the exact script) rather than
-  waiting on a full `run` cycle, which takes ~10-15 minutes just to finish
-  scanning before it would even reach the LLM call. Note a present-but-empty
-  value (`ANTHROPIC_API_KEY=`) is still falsy in Python and would silently
-  read as not-configured, so confirm the value itself, not just its presence.
+- **`ANTHROPIC_API_KEY` reads empty inside the routine sandbox even when it is
+  genuinely set in the cloud environment's "Environment variables" box.**
+  Root cause found 2026-08-12: that box's own UI warns "'ANTHROPIC_API_KEY'
+  won't be used to authenticate requests. Claude Code sessions are
+  authenticated through your Anthropic account" -- the platform reserves
+  that exact name for its own internal Claude Code session auth and does
+  not pass it through to the sandbox's process environment, confirmed
+  directly (`os.getenv` returns empty inside the sandbox with a real key
+  visibly entered under that name in the UI). This is a name collision with
+  the platform, not a user error, and not fixable by re-entering the same
+  variable name again.
+
+  **Fix shipped**: `llm_backend.resolve_anthropic_api_key()` now checks
+  `SWING_ANTHROPIC_API_KEY` first, falling back to `ANTHROPIC_API_KEY` --
+  set the key under the `SWING_` name in the cloud environment's variables
+  box instead (local dev / `.env` / GitHub Actions secrets have no such
+  collision and can keep using the plain name). `_backend_if_configured()`
+  in `src/swing/cli.py` and `AnthropicStructuredBackend.__init__` in
+  `src/swing/llm_backend.py` both use the shared resolver.
+
+  `MODEL_FALLBACK` *is* set (`claude-haiku-4-5-20251001`), so once the key
+  is set under the right name, model resolution will not be a second
+  blocker. Verify with a fast one-off diagnostic that makes a real
+  `anthropic.Anthropic(...).messages.create()` call (see git history for
+  the exact script) rather than waiting on a full `run` cycle, which takes
+  ~10-15 minutes just to finish scanning before it would even reach the LLM
+  call.
+
   **Separately, note `agents.py:_model()` raises `ModelUnavailable` if no
   role-specific model or `MODEL_FALLBACK` is configured, and
   `agents.py:analyze()`'s per-candidate `except Exception: continue` (line

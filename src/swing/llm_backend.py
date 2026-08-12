@@ -37,6 +37,23 @@ PRICE_PER_MILLION_TOKENS: dict[str, tuple[float, float]] = {
 DEFAULT_PRICE_PER_MILLION_TOKENS = (3.00, 15.00)
 
 
+def resolve_anthropic_api_key() -> str | None:
+    """Read the Anthropic key, preferring SWING_ANTHROPIC_API_KEY over ANTHROPIC_API_KEY.
+
+    The scheduled cloud routines' "Environment variables" box (see
+    docs/CRON_AGENTS.md) reserves the exact name ANTHROPIC_API_KEY for the
+    platform's own Claude Code session authentication and does not pass it
+    through to the sandbox's process environment, no matter what value is
+    entered there -- confirmed directly (os.getenv returns empty) even with
+    a real key visibly set in that UI. SWING_ANTHROPIC_API_KEY is this
+    app's own, unreserved name for the same key; local dev and other
+    environments (a plain .env file, GitHub Actions secrets) have no such
+    collision and can keep using ANTHROPIC_API_KEY directly, so it stays as
+    the fallback rather than being removed.
+    """
+    return os.getenv("SWING_ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+
+
 def estimate_cost(model_name: str, prompt_tokens: int, completion_tokens: int) -> float:
     lowered = model_name.lower()
     input_price, output_price = next(
@@ -51,7 +68,7 @@ class AnthropicStructuredBackend:
 
     def __init__(self, database: SwingDatabase | None = None, *, api_key: str | None = None):
         self.database = database
-        self._api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+        self._api_key = api_key or resolve_anthropic_api_key()
         self._clients: dict[str, Any] = {}
 
     def _client(self, model_name: str):
@@ -59,7 +76,7 @@ class AnthropicStructuredBackend:
             from langchain_anthropic import ChatAnthropic
 
             if not self._api_key:
-                raise RuntimeError("ANTHROPIC_API_KEY is not set; cannot call Claude")
+                raise RuntimeError("Neither SWING_ANTHROPIC_API_KEY nor ANTHROPIC_API_KEY is set; cannot call Claude")
             self._clients[model_name] = ChatAnthropic(model=model_name, api_key=self._api_key)
         return self._clients[model_name]
 

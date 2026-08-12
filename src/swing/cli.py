@@ -20,7 +20,7 @@ from .decision_versioning import persist_scan_decisions
 from .execution import SwingExecutionService
 from .lessons_review import review_observations
 from .lifecycle import PositionLifecycleService
-from .llm_backend import AnthropicStructuredBackend
+from .llm_backend import AnthropicStructuredBackend, resolve_anthropic_api_key
 from .market import DeterministicSwingScanner
 from .measurement import TradeMeasurementService
 from .models import (
@@ -41,7 +41,7 @@ from .stops import ProtectedStopService
 
 
 def _backend_if_configured(database: SwingDatabase) -> AnthropicStructuredBackend | None:
-    return AnthropicStructuredBackend(database) if os.getenv("ANTHROPIC_API_KEY") else None
+    return AnthropicStructuredBackend(database) if resolve_anthropic_api_key() else None
 
 
 def _channel_if_configured(settings) -> TelegramChannel | None:
