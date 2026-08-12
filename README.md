@@ -82,7 +82,7 @@ Validated `America/New_York` schedule settings define deterministic scans at 09:
 
 ## Automation & agent topology
 
-The five schedule slots above are not one long-running process — each is an independent scheduled cloud agent: its own isolated sandbox, its own fresh clone of `main`, allow-listed to exactly one `swing-trader` subcommand, and (aside from the reconciliation halt it may set) forbidden from editing `src/`, `tests/`, `docs/`, or `config/`. Agents never message each other directly; all coordination is indirect, through the hosted database.
+The seven schedule slots above are not one long-running process — each is an independent scheduled cloud agent: its own isolated sandbox, its own fresh clone of `main`, allow-listed to exactly one `swing-trader` subcommand, and (aside from the reconciliation halt it may set) forbidden from editing `src/`, `tests/`, `docs/`, or `config/`. Agents never message each other directly; all coordination is indirect, through the hosted database.
 
 ```mermaid
 flowchart LR
@@ -92,12 +92,16 @@ flowchart LR
     CLAUDE[("Anthropic API\nadvisory veto only")]
 
     GH -->|git pull, read-only| SCAN
+    GH -->|git pull, read-only| MIDDAY
+    GH -->|git pull, read-only| AFTERNOON
     GH -->|git pull, read-only| DECIDE
     GH -->|git pull, read-only| RECON
     GH -->|git pull, read-only| REPORT
     GH -->|git pull, read-only| LESSON
 
-    SCAN["scan-agent\nswing-trader scan"] -->|writes candidates| DB
+    SCAN["scan-agent (09:35)\nswing-trader scan"] -->|writes candidates| DB
+    MIDDAY["midday-refresh-agent (12:30)\nswing-trader scan"] -->|writes candidates| DB
+    AFTERNOON["afternoon-refresh-agent (14:30)\nswing-trader scan"] -->|writes candidates| DB
     DB -->|candidates| DECIDE
     DECIDE["decide-trade-agent\nswing-trader run"] -->|strong / very_strong only| CLAUDE
     CLAUDE -->|advisory veto, never sizes or prices| DECIDE
@@ -115,15 +119,20 @@ flowchart LR
     GH -->|git pull| FIX
     FIX -->|"repo write via GitHub MCP tool only\n(direct git push is blocked by\nthe sandbox egress policy)"| GH
 
-    DB -->|PENDING notification rows| RELAY["GitHub Actions\ndeliver-telegram-notifications.yml\nswing-trader drain-notifications\n(every 15 min)"]
+    DB -->|PENDING notification rows\nretried up to MAX_DELIVERY_ATTEMPTS| RELAY["GitHub Actions\ndeliver-telegram-notifications.yml\nswing-trader drain-notifications\n(declared every 15 min)"]
     RELAY -->|sendMessage| TELEGRAM[("Telegram")]
+
+    NASDAQ[("NASDAQ\ntrade-halts feed")]
+    NASDAQ -->|live fetch, GitHub runners\nonly -- blocked from the\nsandboxes above| HALTSRELAY["GitHub Actions\ndeliver-halts-feed.yml\nswing-trader update-halts\n(declared every 30 min)"]
+    HALTSRELAY -->|writes halted-symbol snapshot| DB
+    DB -->|halt_status_known cache read| SCAN
 ```
 
 Three distinct kinds of automation write to three distinct places, and none can touch either of the others' targets:
 
 - **Trading agents** (`scan`, `run`, `reconcile`, `report`, `review-observations`) read code from GitHub but only ever write to the hosted database or, for `run` alone, to Alpaca's paper broker under an explicit environment gate. None of them has repo-write access, so a misbehaving trading agent cannot alter its own code or config.
 - **Maintenance jobs** (one-off fix jobs such as the `poetry.lock` regeneration after a dependency cleanup) do the opposite: they edit the repo and touch neither the trading database nor the broker. Their sandbox blocks a plain `git push` to GitHub outright (the egress proxy returns `403` regardless of credentials); a repo write has to go through the GitHub MCP tool (`create_or_update_file` / `push_files`) instead, with a byte-for-byte hash check afterward since a single corrupted character in a lockfile is worse than no fix at all.
-- **The notification relay** doesn't run in a Claude-hosted sandbox at all — it's a plain scheduled GitHub Actions workflow, because the sandboxes' egress policy also blocks outbound calls to `api.telegram.org` (confirmed via the proxy's own status endpoint: `connect_rejected`, "gateway answered 403 to CONNECT"). Trading agents already write every completed run's outcome to the hosted database as a durable, PENDING notification row regardless of whether delivery ever succeeds; this workflow is the only thing that actually drains that queue, since GitHub-hosted runners have normal outbound internet access. See `docs/CRON_AGENTS.md`'s "Known limitations" for the full story.
+- **Two external relays** don't run in a Claude-hosted sandbox at all — both are plain scheduled GitHub Actions workflows, because the sandboxes' egress policy blocks outbound calls to both `api.telegram.org` and `nasdaqtrader.com` (confirmed via the proxy's own status endpoint: `connect_rejected`, "gateway answered 403 to CONNECT"). `deliver-telegram-notifications.yml` drains the durable, PENDING (or retryable-`FAILED`) `notifications` rows every trading agent already writes regardless of whether delivery ever succeeds. `deliver-halts-feed.yml` fetches NASDAQ's trade-halts feed live and writes it into the hosted database, since GitHub-hosted runners have normal outbound internet access that the sandboxes don't. See `docs/CRON_AGENTS.md`'s "Known limitations" for the full story.
 
 ## Configuration and secrets
 

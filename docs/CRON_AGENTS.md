@@ -99,6 +99,12 @@ of the routine's own model.
   audited payload.
 - **DST**: the scheduler must use the named `America/New_York` zone. Fixed UTC
   expressions are prohibited because they shift market-relative jobs twice a year.
+  In practice, every routine created through the remote-trigger API so far uses a
+  plain fixed-UTC `cron_expression` (no timezone field has been found on that
+  API) -- all of them will drift by exactly one hour relative to the market
+  open/close they're timed against at each DST transition (next: ~2026-11-01,
+  then ~2027-03-08) until either a timezone-aware option is found on that API
+  or every `cron_expression` is manually shifted by ±1 hour at each transition.
 - **Market holidays**: cron doesn't know NYSE is closed on a given Tuesday;
   the commands are expected to degrade gracefully (no candidates / stale-data
   skip) on those days rather than error, but this isn't independently
@@ -115,28 +121,56 @@ of the routine's own model.
   `src/swing/notification_channels.py`), so nothing is lost -- it just
   can't be delivered from here. Delivery instead runs from
   `.github/workflows/deliver-telegram-notifications.yml`, a scheduled
-  GitHub Actions workflow (every 15 minutes) that has normal outbound
-  internet access: it connects to the same hosted Turso database and runs
-  `swing-trader drain-notifications` to send anything still PENDING.
+  GitHub Actions workflow (declared every 15 minutes, though GitHub's own
+  scheduler has been observed delaying that to 45-90+ minutes on this repo)
+  that has normal outbound internet access: it connects to the same hosted
+  Turso database and runs `swing-trader drain-notifications` to send
+  anything still PENDING.
+
+  **This local-delivery-attempt-from-inside-the-blocked-sandbox used to
+  silently lose notifications**: `main()` in `src/swing/cli.py` calls
+  `drain_pending_notifications()` on exit after *every* command (not just
+  `drain-notifications`), so a routine's own doomed local attempt would mark
+  a fresh row `FAILED` on its one and only try, before the working external
+  relay ever got a chance at it -- confirmed directly against the live
+  database on 2026-08-12 (two real notifications lost this way). Fixed by
+  making delivery retryable: `notifications.delivery_attempts` (schema v8)
+  tracks attempts, and `drain_pending_notifications` now also retries
+  `FAILED` rows below `notification_channels.MAX_DELIVERY_ATTEMPTS` (6) --
+  one wasted local attempt no longer costs the row its only chance at the
+  relay that actually works.
 - **The NASDAQ halts feed is also blocked from inside these routines**, same
   proxy policy as Telegram above (confirmed: `curl` to
   `nasdaqtrader.com` fails outright with `CONNECT tunnel failed, response
   403`; the proxy status endpoint logs `connect_rejected` for that host).
   `fetch_current_halts()` in `src/swing/data_feed.py` fails closed exactly
   as designed when this happens (`halt_status_known=False`), which is safe
-  but means production runs from these routines currently reject virtually
-  the entire universe with `halt_status_unknown` -- functionally the same
+  but meant production runs from these routines rejected virtually the
+  entire universe with `halt_status_unknown` -- functionally the same
   outcome as before that feed was integrated, just for a well-understood
-  reason instead of a hardcoded stub. A fix following the same pattern as
-  the Telegram relay above (a scheduled GitHub Actions job that fetches the
-  halts feed and writes the current halted set into the hosted database,
-  with `fetch_current_halts()` reading from there instead of calling
-  NASDAQ directly) has not been built yet.
-- **`ANTHROPIC_API_KEY` is not set in this environment as of 2026-08-12**,
+  reason instead of a hardcoded stub.
+
+  **Fixed with the same relay pattern as Telegram above.**
+  `.github/workflows/deliver-halts-feed.yml` (declared every 30 minutes) runs
+  `swing-trader update-halts` from a GitHub-hosted runner, which fetches the
+  feed live and writes the current halted-symbol set into a new
+  `nasdaq_halts_cache` table in the hosted database via
+  `SwingDatabase.set_halts_cache()`. `fetch_current_halts()` now takes an
+  optional `database` argument and checks that hosted cache first (TTL
+  `data_feed.HALTS_DB_CACHE_TTL_SECONDS`, 2h) before falling back to its
+  original local-disk-cache-then-live-fetch behavior -- so it degrades safely
+  in local dev (no `database` passed, or no Turso configured) and works from
+  a blocked sandbox by reading what the relay already fetched.
+- **`ANTHROPIC_API_KEY` was not set in this environment as of 2026-08-12**,
   confirmed via a direct presence check (not just an unfunded key) --
-  `llm_backend_configured` will read `false` and every candidate resolves
-  to `NO_TRADE` regardless of score until it's added to the environment's
-  variables.
+  `llm_backend_configured` read `false` and every candidate resolved
+  to `NO_TRADE` regardless of score. Added to the environment's variables
+  since; `_backend_if_configured()` in `src/swing/cli.py` does a plain,
+  uncached `os.getenv` presence check each process, so no code change was
+  needed -- verify by checking `llm_backend_configured: true` in the next
+  `decide-trade-agent` run's JSON output. Note a present-but-empty value
+  (`ANTHROPIC_API_KEY=`) is still falsy in Python and would silently read as
+  not-configured, so confirm the value itself, not just its presence.
 - **Earnings-date lookups still use yfinance**, not Alpaca — Alpaca's market
   data API has no earnings calendar at all. Yahoo Finance blocks this cloud
   environment's IP range for bulk price history (confirmed: 100%
@@ -152,3 +186,12 @@ of the routine's own model.
   itself warns these are visible to anything running in the environment.
   Do not enable paper submission there until access controls, masking, rotation,
   and least-privilege paper-only credentials have been reviewed.
+- **Two setup filters always fail closed/unknown in production, independent of
+  the halts/earnings issues above** -- not regressions, pre-existing gaps:
+  - `strategy.py`'s relative-strength-continuation setup always rejects with
+    `sector_relative_strength_unavailable` because no sector-ETF data feed is
+    wired up (`# TODO` at `src/swing/strategy.py:369`).
+  - `major_event_status` always resolves to `"unknown"` in production because
+    `prohibited_event_risk` is hardcoded `None` -- no FDA/M&A/index-rebalance/
+    investor-day calendar is integrated (`# TODO` at
+    `src/swing/data_feed.py:423`).
