@@ -5,6 +5,7 @@ import json
 from src.swing import cli as cli_module
 from src.swing.config import SwingSettings, TelegramSettings
 from src.swing.notification_channels import (
+    MAX_DELIVERY_ATTEMPTS,
     FakeNotificationChannel,
     TelegramChannel,
     drain_pending_notifications,
@@ -38,6 +39,35 @@ def test_drain_marks_rows_failed_when_channel_fails(database):
     assert result == {"attempted": 1, "sent": 0, "failed": 1}
     statuses = [row["delivery_status"] for row in database.rows("SELECT delivery_status FROM notifications")]
     assert statuses == ["FAILED"]
+
+
+def test_drain_retries_a_failed_row_on_a_later_call(database):
+    # A routine's own process attempts delivery once immediately, from inside
+    # a sandbox that can't reach Telegram -- that must not permanently kill
+    # the row before a later drain (e.g. the GitHub Actions relay) can retry.
+    _emit(database)
+    drain_pending_notifications(database, FakeNotificationChannel(fail=True))
+    rows = database.rows("SELECT delivery_status, delivery_attempts FROM notifications")
+    assert rows == [{"delivery_status": "FAILED", "delivery_attempts": 1}]
+
+    result = drain_pending_notifications(database, FakeNotificationChannel())
+    assert result == {"attempted": 1, "sent": 1, "failed": 0}
+    rows = database.rows("SELECT delivery_status, delivery_attempts FROM notifications")
+    assert rows == [{"delivery_status": "SENT", "delivery_attempts": 2}]
+
+
+def test_drain_stops_retrying_after_max_delivery_attempts(database):
+    _emit(database)
+    channel = FakeNotificationChannel(fail=True)
+    for _ in range(MAX_DELIVERY_ATTEMPTS):
+        result = drain_pending_notifications(database, channel)
+        assert result == {"attempted": 1, "sent": 0, "failed": 1}
+
+    # Exhausted: the next drain call must not select this row again.
+    result = drain_pending_notifications(database, channel)
+    assert result == {"attempted": 0, "sent": 0, "failed": 0}
+    rows = database.rows("SELECT delivery_status, delivery_attempts FROM notifications")
+    assert rows == [{"delivery_status": "FAILED", "delivery_attempts": MAX_DELIVERY_ATTEMPTS}]
 
 
 def test_drain_is_a_noop_without_a_configured_channel(database):

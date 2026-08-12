@@ -253,6 +253,44 @@ def test_forward_migration_preserves_populated_v5_database(tmp_path):
     assert migrated.rows("SELECT COUNT(*) AS n FROM closed_trade_journal")[0]["n"] == 0
 
 
+def test_forward_migration_adds_delivery_attempts_to_populated_v7_database(tmp_path):
+    path = tmp_path / "populated-v7.db"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        )"""
+    )
+    connection.execute(
+        """CREATE TABLE notifications (
+            notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            title TEXT NOT NULL,
+            reason_code TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            dedupe_key TEXT UNIQUE,
+            delivery_status TEXT NOT NULL DEFAULT 'PENDING'
+        )"""
+    )
+    connection.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(7,'2026-08-01')")
+    connection.execute(
+        """INSERT INTO notifications(created_at,event_type,severity,title,reason_code,payload_json,delivery_status)
+           VALUES('2026-08-01','RUN_CYCLE_SUMMARY','INFO','No trade found','NO_TRADE','{}','FAILED')"""
+    )
+    connection.commit()
+    connection.close()
+
+    migrated = SwingDatabase(path)
+    migrated.initialize("SWING_V1.0")
+
+    assert migrated.rows("SELECT MAX(version) AS version FROM schema_migrations")[0]["version"] == SCHEMA_VERSION
+    rows = migrated.rows("SELECT delivery_status, delivery_attempts FROM notifications")
+    assert rows == [{"delivery_status": "FAILED", "delivery_attempts": 0}]
+
+
 def test_identical_versioned_inputs_have_identical_persisted_decisions(database, settings):
     versions = DecisionVersions.from_settings(settings)
     kwargs = {

@@ -14,6 +14,15 @@ from .security import redact_text
 
 _TELEGRAM_TEXT_LIMIT = 4000  # Telegram's sendMessage cap is 4096; leave headroom
 
+# A routine's own process attempts delivery once immediately on exit
+# (_finalize_notifications_best_effort in cli.py), from inside a sandbox
+# that cannot reach api.telegram.org -- that attempt is expected to fail
+# and must not permanently kill the row before the GitHub Actions relay
+# (.github/workflows/deliver-telegram-notifications.yml, which can reach
+# Telegram) gets a chance at it. FAILED rows stay retryable up to this many
+# attempts before being left alone for good.
+MAX_DELIVERY_ATTEMPTS = 6
+
 
 class NotificationChannel(ABC):
     @abstractmethod
@@ -63,8 +72,10 @@ def drain_pending_notifications(database: SwingDatabase, channel: NotificationCh
         return {"attempted": 0, "sent": 0, "failed": 0}
     attempted = sent = failed = 0
     for row in database.rows(
-        "SELECT * FROM notifications WHERE delivery_status='PENDING' ORDER BY created_at ASC LIMIT ?",
-        (limit,),
+        """SELECT * FROM notifications
+           WHERE delivery_status='PENDING' OR (delivery_status='FAILED' AND delivery_attempts < ?)
+           ORDER BY created_at ASC LIMIT ?""",
+        (MAX_DELIVERY_ATTEMPTS, limit),
     ):
         attempted += 1
         try:

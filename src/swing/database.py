@@ -43,7 +43,7 @@ def _turso_serverless():
     return turso_serverless
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 DDL = """
@@ -496,7 +496,8 @@ CREATE TABLE IF NOT EXISTS notifications (
     reason_code TEXT NOT NULL,
     payload_json TEXT NOT NULL,
     dedupe_key TEXT UNIQUE,
-    delivery_status TEXT NOT NULL DEFAULT 'PENDING'
+    delivery_status TEXT NOT NULL DEFAULT 'PENDING',
+    delivery_attempts INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS structured_logs (
     log_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -616,6 +617,13 @@ MIGRATION_6_COLUMNS: dict[str, dict[str, str]] = {
 }
 
 
+MIGRATION_8_COLUMNS: dict[str, dict[str, str]] = {
+    "notifications": {
+        "delivery_attempts": "INTEGER NOT NULL DEFAULT 0",
+    },
+}
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -693,6 +701,12 @@ class SwingDatabase:
                     "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(6, ?)",
                     (_now(),),
                 )
+            if int(existing) < 8:
+                self._migrate_v8(connection)
+                connection.execute(
+                    "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(8, ?)",
+                    (_now(),),
+                )
             connection.executescript(JOURNAL_DDL)
             connection.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
@@ -739,6 +753,15 @@ class SwingDatabase:
                 if column not in present:
                     connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
         connection.executescript(JOURNAL_DDL)
+
+    def _migrate_v8(self, connection: Any) -> None:
+        """Forward-only notification-retry migration; safe on populated v6/v7 DBs."""
+
+        for table, additions in MIGRATION_8_COLUMNS.items():
+            present = self._table_columns(connection, table)
+            for column, declaration in additions.items():
+                if column not in present:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     def set_state(self, key: str, value: Any, updated_by: str) -> None:
         with self.connect() as connection:
@@ -1939,7 +1962,7 @@ class SwingDatabase:
             raise ValueError("status must be SENT or FAILED")
         with self.connect() as connection:
             connection.execute(
-                "UPDATE notifications SET delivery_status=? WHERE notification_id=?",
+                "UPDATE notifications SET delivery_status=?, delivery_attempts=delivery_attempts+1 WHERE notification_id=?",
                 (status, notification_id),
             )
 
