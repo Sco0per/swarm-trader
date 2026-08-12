@@ -628,6 +628,20 @@ def _safe(value: Any) -> str:
     return redact_text(value)
 
 
+def _row_to_dict(cursor: Any, row: Any) -> dict[str, Any]:
+    """Convert one fetched row to a plain dict from cursor.description.
+
+    dict(row) alone only works when row has a .keys() method (true for
+    sqlite3.Row). turso_serverless's Row supports index and column-name
+    __getitem__ the same way sqlite3.Row does, but not .keys() -- dict()
+    then falls back to treating the row as an iterable of (key, value)
+    pairs and raises on the first plain value. Building the mapping from
+    cursor.description (standard DB-API 2.0, present on both drivers)
+    works identically for either row type.
+    """
+    return dict(zip((column[0] for column in cursor.description), row))
+
+
 class SwingDatabase:
     """Small explicit repository layer; callers never depend on ORM state."""
 
@@ -981,14 +995,15 @@ class SwingDatabase:
 
     def get_llm_review_state(self, candidate_key: str, role: str, model_name: str, prompt_version: str) -> dict[str, Any] | None:
         with self.connect() as connection:
-            row = connection.execute(
+            cursor = connection.execute(
                 """SELECT * FROM llm_review_state
                    WHERE candidate_key=? AND role=? AND model_name=? AND prompt_version=?""",
                 (candidate_key, role, model_name, prompt_version),
-            ).fetchone()
-        if not row:
-            return None
-        result = dict(row)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            result = _row_to_dict(cursor, row)
         result["response"] = json.loads(result.pop("response_json"))
         return result
 
@@ -1335,8 +1350,8 @@ class SwingDatabase:
 
     def active_admissions(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT * FROM entry_admissions WHERE status IN ('PENDING','SUBMITTED','UNKNOWN') ORDER BY created_at").fetchall()
-        return [dict(row) for row in rows]
+            cursor = connection.execute("SELECT * FROM entry_admissions WHERE status IN ('PENDING','SUBMITTED','UNKNOWN') ORDER BY created_at")
+            return [_row_to_dict(cursor, row) for row in cursor.fetchall()]
 
     def add_trade(self, values: dict[str, Any]) -> None:
         required = {
@@ -1528,8 +1543,9 @@ class SwingDatabase:
 
     def get_position_lifecycle(self, trade_id: str) -> dict[str, Any] | None:
         with self.connect() as connection:
-            row = connection.execute("SELECT * FROM position_lifecycle WHERE trade_id=?", (trade_id,)).fetchone()
-        return dict(row) if row else None
+            cursor = connection.execute("SELECT * FROM position_lifecycle WHERE trade_id=?", (trade_id,))
+            row = cursor.fetchone()
+            return _row_to_dict(cursor, row) if row else None
 
     def transition_position_lifecycle(
         self,
@@ -1619,10 +1635,11 @@ class SwingDatabase:
         now = _now()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
+            cursor = connection.execute(
                 "SELECT * FROM live_ticket_approvals WHERE decision_id=? AND consumed_at IS NULL",
                 (decision_id,),
-            ).fetchone()
+            )
+            row = cursor.fetchone()
             if row is None:
                 raise ValueError("No unused deterministic live-ticket approval exists for this decision")
             if str(row["expires_at"]) < now:
@@ -1631,7 +1648,7 @@ class SwingDatabase:
                 "UPDATE live_ticket_approvals SET consumed_at=? WHERE decision_id=? AND consumed_at IS NULL",
                 (now, decision_id),
             )
-        result = dict(row)
+            result = _row_to_dict(cursor, row)
         for field in ("candidate_json", "proposal_json", "risk_json"):
             result[field] = json.loads(result[field])
         return result
@@ -1783,18 +1800,19 @@ class SwingDatabase:
 
     def get_trade(self, trade_id: str) -> dict[str, Any] | None:
         with self.connect() as connection:
-            row = connection.execute("SELECT * FROM trades WHERE trade_id=?", (trade_id,)).fetchone()
-        return dict(row) if row else None
+            cursor = connection.execute("SELECT * FROM trades WHERE trade_id=?", (trade_id,))
+            row = cursor.fetchone()
+            return _row_to_dict(cursor, row) if row else None
 
     def open_trades(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT * FROM trades WHERE status IN ('SUBMITTED','OPEN','PARTIALLY_FILLED')").fetchall()
-        return [dict(row) for row in rows]
+            cursor = connection.execute("SELECT * FROM trades WHERE status IN ('SUBMITTED','OPEN','PARTIALLY_FILLED')")
+            return [_row_to_dict(cursor, row) for row in cursor.fetchall()]
 
     def closed_trades(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT * FROM trades WHERE status='CLOSED' ORDER BY exit_datetime").fetchall()
-        return [dict(row) for row in rows]
+            cursor = connection.execute("SELECT * FROM trades WHERE status='CLOSED' ORDER BY exit_datetime")
+            return [_row_to_dict(cursor, row) for row in cursor.fetchall()]
 
     def new_position_count(self, start_iso: str) -> int:
         with self.connect() as connection:
@@ -1814,12 +1832,13 @@ class SwingDatabase:
 
     def last_losing_trade(self, ticker: str) -> dict[str, Any] | None:
         with self.connect() as connection:
-            row = connection.execute(
+            cursor = connection.execute(
                 """SELECT * FROM trades WHERE ticker=? AND status='CLOSED' AND realized_pnl < 0
                    ORDER BY exit_datetime DESC LIMIT 1""",
                 (ticker.upper(),),
-            ).fetchone()
-        return dict(row) if row else None
+            )
+            row = cursor.fetchone()
+            return _row_to_dict(cursor, row) if row else None
 
     def record_equity_snapshot(self, **values: Any) -> None:
         with self.connect() as connection:
@@ -1987,14 +2006,14 @@ class SwingDatabase:
         OBSERVATION/PROVISIONAL rows must never influence production decisions.
         """
         with self.connect() as connection:
-            rows = connection.execute(
+            cursor = connection.execute(
                 """SELECT * FROM lessons WHERE status='VALIDATED'
                    AND (applicable_setup IS NULL OR applicable_setup=?)
                    AND (applicable_regime IS NULL OR applicable_regime=?)
                    ORDER BY created_at DESC""",
                 (setup_type, market_regime),
-            ).fetchall()
-        return [dict(row) for row in rows]
+            )
+            return [_row_to_dict(cursor, row) for row in cursor.fetchall()]
 
     def create_observation(
         self,
@@ -2087,8 +2106,9 @@ class SwingDatabase:
 
     def get_hypothesis(self, hypothesis_id: str) -> dict[str, Any] | None:
         with self.connect() as connection:
-            row = connection.execute("SELECT * FROM hypotheses WHERE hypothesis_id=?", (hypothesis_id,)).fetchone()
-        return dict(row) if row else None
+            cursor = connection.execute("SELECT * FROM hypotheses WHERE hypothesis_id=?", (hypothesis_id,))
+            row = cursor.fetchone()
+            return _row_to_dict(cursor, row) if row else None
 
     def update_hypothesis_validation(self, hypothesis_id: str, *, status: str, results: dict[str, Any]) -> None:
         if status not in {"VALIDATING", "VALIDATED", "REJECTED"}:
@@ -2164,8 +2184,8 @@ class SwingDatabase:
         if not query.lstrip().upper().startswith("SELECT"):
             raise ValueError("rows() accepts SELECT statements only")
         with self.connect() as connection:
-            result = connection.execute(query, params).fetchall()
-        return [dict(row) for row in result]
+            cursor = connection.execute(query, params)
+            return [_row_to_dict(cursor, row) for row in cursor.fetchall()]
 
     def table_counts(self) -> dict[str, int]:
         tables = [
