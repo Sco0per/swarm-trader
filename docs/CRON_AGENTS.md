@@ -118,6 +118,25 @@ of the routine's own model.
   GitHub Actions workflow (every 15 minutes) that has normal outbound
   internet access: it connects to the same hosted Turso database and runs
   `swing-trader drain-notifications` to send anything still PENDING.
+- **The NASDAQ halts feed is also blocked from inside these routines**, same
+  proxy policy as Telegram above (confirmed: `curl` to
+  `nasdaqtrader.com` fails outright with `CONNECT tunnel failed, response
+  403`; the proxy status endpoint logs `connect_rejected` for that host).
+  `fetch_current_halts()` in `src/swing/data_feed.py` fails closed exactly
+  as designed when this happens (`halt_status_known=False`), which is safe
+  but means production runs from these routines currently reject virtually
+  the entire universe with `halt_status_unknown` -- functionally the same
+  outcome as before that feed was integrated, just for a well-understood
+  reason instead of a hardcoded stub. A fix following the same pattern as
+  the Telegram relay above (a scheduled GitHub Actions job that fetches the
+  halts feed and writes the current halted set into the hosted database,
+  with `fetch_current_halts()` reading from there instead of calling
+  NASDAQ directly) has not been built yet.
+- **`ANTHROPIC_API_KEY` is not set in this environment as of 2026-08-12**,
+  confirmed via a direct presence check (not just an unfunded key) --
+  `llm_backend_configured` will read `false` and every candidate resolves
+  to `NO_TRADE` regardless of score until it's added to the environment's
+  variables.
 - **Earnings-date lookups still use yfinance**, not Alpaca — Alpaca's market
   data API has no earnings calendar at all. Yahoo Finance blocks this cloud
   environment's IP range for bulk price history (confirmed: 100%
