@@ -850,9 +850,9 @@ class SwingDatabase:
         """
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)).isoformat()
         with self.connect() as connection:
-            row = connection.execute(
-                "SELECT halted_symbols_json, updated_at FROM nasdaq_halts_cache WHERE id=1"
-            ).fetchone()
+            cursor = connection.execute("SELECT halted_symbols_json, updated_at FROM nasdaq_halts_cache WHERE id=1")
+            row = cursor.fetchone()
+            row = _row_to_dict(cursor, row) if row else None
         if row is None or row["updated_at"] < cutoff:
             return None
         return set(json.loads(row["halted_symbols_json"]))

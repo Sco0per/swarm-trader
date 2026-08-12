@@ -15,6 +15,7 @@ than accidentally sqlite3-specific.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 from src.swing.database import _row_to_dict, SwingDatabase
 
@@ -82,3 +83,33 @@ def test_get_trade_returns_none_without_touching_row_conversion_when_absent(monk
     monkeypatch.setattr(database, "connect", fake_connect)
 
     assert database.get_trade("missing") is None
+
+
+def test_get_halts_cache_works_when_the_driver_returns_a_plain_tuple(monkeypatch, tmp_path):
+    # Reproduces a real production failure: get_halts_cache's original
+    # implementation indexed the fetched row by column name directly
+    # (row["updated_at"]), which raised "tuple indices must be integers or
+    # slices, not str" against the real hosted Turso database -- confirmed
+    # live on 2026-08-12, the exact bug class this test file exists for.
+    database = SwingDatabase(tmp_path / "x.db")
+    fresh = datetime.now(timezone.utc).isoformat()
+
+    @contextmanager
+    def fake_connect():
+        yield _FakeConnection(["halted_symbols_json", "updated_at"], [('["AAA", "BBB"]', fresh)])
+
+    monkeypatch.setattr(database, "connect", fake_connect)
+
+    assert database.get_halts_cache(ttl_seconds=86400) == {"AAA", "BBB"}
+
+
+def test_get_halts_cache_returns_none_without_touching_row_conversion_when_absent(monkeypatch, tmp_path):
+    database = SwingDatabase(tmp_path / "x.db")
+
+    @contextmanager
+    def fake_connect():
+        yield _FakeConnection(["halted_symbols_json", "updated_at"], [])
+
+    monkeypatch.setattr(database, "connect", fake_connect)
+
+    assert database.get_halts_cache(ttl_seconds=86400) is None
