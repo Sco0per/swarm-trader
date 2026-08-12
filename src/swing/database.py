@@ -396,6 +396,15 @@ CREATE TABLE IF NOT EXISTS earnings_cache (
     trading_days INTEGER,
     updated_at TEXT NOT NULL
 );
+-- Snapshot of NASDAQ's public regulatory trade-halts feed (per-symbol
+-- trading halts). Unrelated to halt_events below, which tracks system
+-- safety halts (kill switch, drawdown halt, etc.).
+CREATE TABLE IF NOT EXISTS nasdaq_halts_cache (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    halted_symbols_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'nasdaqtrader_rss'
+);
 CREATE TABLE IF NOT EXISTS risk_snapshots (
     snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
     observed_at TEXT NOT NULL,
@@ -829,6 +838,35 @@ class SwingDatabase:
                        ON CONFLICT(symbol) DO UPDATE SET trading_days=excluded.trading_days, updated_at=excluded.updated_at""",
                     (symbol, trading_days, now),
                 )
+
+    def get_halts_cache(self, ttl_seconds: int) -> set[str] | None:
+        """Read the current NASDAQ halted-symbol snapshot if still fresh, else None.
+
+        Single-row cache (see nasdaq_halts_cache DDL), written only by the
+        GitHub Actions relay (.github/workflows/deliver-halts-feed.yml, via
+        `swing-trader update-halts`) -- the cloud-routine sandboxes this is
+        read from cannot reach nasdaqtrader.com directly. See
+        docs/CRON_AGENTS.md and data_feed.fetch_current_halts.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)).isoformat()
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT halted_symbols_json, updated_at FROM nasdaq_halts_cache WHERE id=1"
+            ).fetchone()
+        if row is None or row["updated_at"] < cutoff:
+            return None
+        return set(json.loads(row["halted_symbols_json"]))
+
+    def set_halts_cache(self, halted_symbols: set[str], *, source: str = "nasdaqtrader_rss") -> None:
+        """Overwrite the single current halted-symbol snapshot. Called only by the relay."""
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO nasdaq_halts_cache(id, halted_symbols_json, updated_at, source)
+                   VALUES(1, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET halted_symbols_json=excluded.halted_symbols_json,
+                   updated_at=excluded.updated_at, source=excluded.source""",
+                (json.dumps(sorted(halted_symbols)), _now(), source),
+            )
 
     def record_candidate(
         self,

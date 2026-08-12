@@ -14,7 +14,7 @@ from .agents import AgentPipeline
 from .brokers.alpaca import AlpacaPaperProvider
 from .brokers.human_supervised import HumanSuppliedBrokerProvider
 from .config import load_settings, ROOT
-from .data_feed import load_scan_inputs
+from .data_feed import fetch_and_store_current_halts, load_scan_inputs
 from .database import SCHEMA_VERSION, SwingDatabase
 from .decision_versioning import persist_scan_decisions
 from .execution import SwingExecutionService
@@ -139,6 +139,7 @@ def _run() -> int:
     sub.add_parser("positions", help="Show durable open swing positions and lifecycle state without contacting a broker")
     sub.add_parser("analytics", help="Calculate expectancy-first analytics")
     sub.add_parser("drain-notifications", help="Attempt delivery of PENDING notification rows via the configured channel (e.g. Telegram); safe to run repeatedly")
+    sub.add_parser("update-halts", help="Fetch NASDAQ's public trade-halts feed and store the current halted-symbol set in the hosted database; run only where nasdaqtrader.com is reachable (see .github/workflows/deliver-halts-feed.yml)")
     report = sub.add_parser("report", help="Generate a persistent report")
     report.add_argument("type", choices=["daily", "weekly", "20-trade", "50-trade", "100-trade", "graduation"])
     kill = sub.add_parser("kill-switch", help="Turn the global new-order kill switch on or off")
@@ -226,6 +227,20 @@ def _run() -> int:
         print(json.dumps(reports.dashboard_payload(), indent=2, default=str))
     elif args.command == "drain-notifications":
         print(json.dumps(drain_pending_notifications(database, _channel_if_configured(settings)), indent=2))
+    elif args.command == "update-halts":
+        halted = fetch_and_store_current_halts(database)
+        print(
+            json.dumps(
+                {
+                    "fetched": halted is not None,
+                    "count": len(halted) if halted is not None else 0,
+                    "halted_symbols": sorted(halted) if halted is not None else None,
+                },
+                indent=2,
+            )
+        )
+        if halted is None:
+            return 2
     elif args.command == "report":
         print(reports.generate(args.type))
     elif args.command == "kill-switch":

@@ -1,0 +1,48 @@
+name: Update NASDAQ halts feed cache
+
+# fetch_current_halts() in src/swing/data_feed.py normally fetches NASDAQ's
+# public trading-halts RSS feed directly, but the scheduled cloud routines
+# it runs from (see docs/CRON_AGENTS.md) have nasdaqtrader.com blocked at
+# the network/proxy level, so it always fails closed there
+# (halt_status_known=False for every symbol) -- the exact same class of
+# problem Telegram delivery has, solved the same way (see
+# deliver-telegram-notifications.yml). GitHub-hosted runners have normal
+# outbound internet access, so this workflow fetches the feed here instead
+# and writes the current halted-symbol set into the same hosted Turso
+# database; fetch_current_halts() reads it back from there when running
+# inside a blocked sandbox. No new secret is needed -- the NASDAQ feed is
+# public and unauthenticated.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  update-halts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Cache Poetry dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pypoetry
+          key: poetry-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-ansi
+
+      - name: Fetch and store current NASDAQ halts
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: poetry run swing-trader update-halts

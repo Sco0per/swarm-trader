@@ -18,6 +18,15 @@ def test_earnings_cache_round_trips_through_database(database):
     assert database.get_earnings_cache_many(["AAA"], ttl_seconds=0) == {}
 
 
+def test_halts_cache_round_trips_through_database(database):
+    assert database.get_halts_cache(ttl_seconds=86400) is None
+
+    database.set_halts_cache({"AAA", "BBB"})
+    assert database.get_halts_cache(ttl_seconds=86400) == {"AAA", "BBB"}
+
+    assert database.get_halts_cache(ttl_seconds=0) is None
+
+
 def test_universe_excludes_leveraged_and_uses_valid_sectors():
     assert len(UNIVERSE_SYMBOLS) == len(set(UNIVERSE_SYMBOLS))
     assert not (set(UNIVERSE_SYMBOLS) & LEVERAGED_OR_INVERSE_ETFS)
@@ -311,6 +320,85 @@ def test_fetch_current_halts_returns_none_on_non_200(monkeypatch, tmp_path):
     monkeypatch.setattr(data_feed, "CACHE_DIR", tmp_path)
     monkeypatch.setattr(data_feed.requests, "get", lambda *a, **k: _FakeHaltsResponse(b"", status=503))
     assert data_feed.fetch_current_halts() is None
+
+
+def test_fetch_current_halts_uses_db_cache_and_skips_live_fetch(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_feed, "CACHE_DIR", tmp_path)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("a fresh DB cache hit should not call the network")
+
+    monkeypatch.setattr(data_feed.requests, "get", _boom)
+
+    class _FakeDatabase:
+        def get_halts_cache(self, ttl_seconds):
+            return {"DBCACHED"}
+
+    assert data_feed.fetch_current_halts(database=_FakeDatabase()) == {"DBCACHED"}  # type: ignore[arg-type]
+
+
+def test_fetch_current_halts_falls_back_to_live_fetch_and_stores_when_db_cache_misses(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_feed, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(data_feed.requests, "get", lambda *a, **k: _FakeHaltsResponse(_HALTS_FEED_XML.encode()))
+    stored: dict = {}
+
+    class _FakeDatabase:
+        def get_halts_cache(self, ttl_seconds):
+            return None
+
+        def set_halts_cache(self, halted_symbols):
+            stored["halted_symbols"] = halted_symbols
+
+    result = data_feed.fetch_current_halts(database=_FakeDatabase())  # type: ignore[arg-type]
+
+    assert result == {"FRESH", "STALE"}
+    assert stored["halted_symbols"] == {"FRESH", "STALE"}
+
+
+def test_fetch_current_halts_survives_db_errors(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_feed, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(data_feed.requests, "get", lambda *a, **k: _FakeHaltsResponse(_HALTS_FEED_XML.encode()))
+
+    class _BrokenDatabase:
+        def get_halts_cache(self, ttl_seconds):
+            raise RuntimeError("Turso unreachable")
+
+        def set_halts_cache(self, halted_symbols):
+            raise RuntimeError("Turso unreachable")
+
+    result = data_feed.fetch_current_halts(database=_BrokenDatabase())  # type: ignore[arg-type]
+
+    assert result == {"FRESH", "STALE"}
+
+
+def test_fetch_and_store_current_halts_writes_db_cache_on_success(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_feed, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(data_feed.requests, "get", lambda *a, **k: _FakeHaltsResponse(_HALTS_FEED_XML.encode()))
+    stored: dict = {}
+
+    class _FakeDatabase:
+        def set_halts_cache(self, halted_symbols):
+            stored["halted_symbols"] = halted_symbols
+
+    result = data_feed.fetch_and_store_current_halts(_FakeDatabase())  # type: ignore[arg-type]
+
+    assert result == {"FRESH", "STALE"}
+    assert stored["halted_symbols"] == {"FRESH", "STALE"}
+
+
+def test_fetch_and_store_current_halts_returns_none_and_does_not_write_on_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_feed, "CACHE_DIR", tmp_path)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("network unreachable")
+
+    monkeypatch.setattr(data_feed.requests, "get", _boom)
+
+    class _FakeDatabase:
+        def set_halts_cache(self, halted_symbols):
+            raise AssertionError("a failed live fetch must never overwrite good cached data with nothing")
+
+    assert data_feed.fetch_and_store_current_halts(_FakeDatabase()) is None  # type: ignore[arg-type]
 
 
 def test_build_universe_assets_marks_symbol_halted_from_feed(monkeypatch, tmp_path):

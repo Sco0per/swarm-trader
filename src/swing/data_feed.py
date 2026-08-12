@@ -61,6 +61,7 @@ CACHE_DIR = Path(__file__).resolve().parents[2] / ".cache" / "swing_data_feed"
 BAR_CACHE_TTL_SECONDS = 6 * 3600
 EARNINGS_CACHE_TTL_SECONDS = 24 * 3600
 HALTS_CACHE_TTL_SECONDS = 60
+HALTS_DB_CACHE_TTL_SECONDS = 2 * 3600  # see cron cadence note in deliver-halts-feed.yml
 HALTS_FETCH_TIMEOUT_SECONDS = 10
 REQUIRED_COLUMNS = ("open", "high", "low", "close", "volume")
 
@@ -341,8 +342,8 @@ def fetch_earnings_trading_days(symbol: str, database: "SwingDatabase | None" = 
     return fetch_earnings_trading_days_batch([symbol], database=database).get(symbol)
 
 
-def fetch_current_halts() -> set[str] | None:
-    """Currently-halted symbols from NASDAQ's public regulatory trade-halts feed.
+def _fetch_halts_live() -> set[str] | None:
+    """Hit NASDAQ's public trade-halts feed directly, no caching. None on any failure.
 
     The feed is a reverse-chronological log of recent halt/resumption events
     (not just a "currently halted" list), covering all US-listed markets, not
@@ -351,15 +352,7 @@ def fetch_current_halts() -> set[str] | None:
     if a halt is still unresolved (e.g. regulatory-information halts), so
     "not present in the feed" reliably means "no active halt on record" --
     it's not a rolling window that ages out active halts.
-
-    Returns None, never an empty set, on any fetch/parse failure: an empty
-    set would silently claim "confirmed nothing is halted," which this
-    function cannot assert if the feed itself was unreachable. Callers must
-    treat None as unknown and fail closed, same as every other safety input.
     """
-    cached = _cache_get("halts", "current", HALTS_CACHE_TTL_SECONDS)
-    if cached is not None:
-        return set(cached)
     try:
         response = requests.get(
             NASDAQ_HALTS_FEED_URL,
@@ -381,6 +374,74 @@ def fetch_current_halts() -> set[str] | None:
         resumption_el = item.find("ndaq:ResumptionDate", _NASDAQ_HALTS_NS)
         if resumption_el is None or not (resumption_el.text or "").strip():
             halted.add(symbol)
+    return halted
+
+
+def fetch_current_halts(database: "SwingDatabase | None" = None) -> set[str] | None:
+    """Currently-halted symbols from NASDAQ's public regulatory trade-halts feed.
+
+    Checked cheapest-first, same ordering rationale as
+    fetch_earnings_trading_days_batch: the hosted Turso cache (survives
+    across routine runs -- this is what makes the feed usable at all from a
+    sandbox that cannot reach nasdaqtrader.com directly, see
+    docs/CRON_AGENTS.md and .github/workflows/deliver-halts-feed.yml), then
+    the local disk cache (survives only within this process), then a live
+    NASDAQ fetch as a last resort (works for local dev; simply fails and
+    falls through in a blocked sandbox). A successful live fetch is written
+    back to both caches, best-effort for the Turso write.
+
+    Returns None, never an empty set, on any fetch/parse failure: an empty
+    set would silently claim "confirmed nothing is halted," which this
+    function cannot assert if every source was unreachable. Callers must
+    treat None as unknown and fail closed, same as every other safety input.
+    """
+    if database is not None:
+        try:
+            hosted = database.get_halts_cache(HALTS_DB_CACHE_TTL_SECONDS)
+        except Exception:
+            hosted = None
+        if hosted is not None:
+            return hosted
+
+    cached = _cache_get("halts", "current", HALTS_CACHE_TTL_SECONDS)
+    if cached is not None:
+        return set(cached)
+
+    halted = _fetch_halts_live()
+    if halted is None:
+        return None
+    _cache_set("halts", "current", sorted(halted))
+    if database is not None:
+        try:
+            database.set_halts_cache(halted)
+        except Exception:
+            pass
+    return halted
+
+
+def fetch_and_store_current_halts(database: "SwingDatabase") -> set[str] | None:
+    """Force a live NASDAQ fetch and persist it to the hosted Turso cache.
+
+    Used only by the GitHub Actions relay
+    (.github/workflows/deliver-halts-feed.yml, via `swing-trader
+    update-halts`), which runs on a GitHub-hosted runner with normal
+    outbound internet access -- unlike the cloud-routine sandboxes this
+    package otherwise runs in, where nasdaqtrader.com is blocked at the
+    network/proxy level. Always talks to NASDAQ directly (bypasses both the
+    disk and DB read caches) so every relay run gets a genuinely fresh
+    snapshot.
+
+    On failure, returns None and leaves any existing Turso row untouched --
+    never overwrite good cached data with nothing. Unlike
+    fetch_current_halts's read-side Turso calls, the write below is NOT
+    wrapped in try/except: this function's entire job is the write, so a
+    Turso failure should propagate and fail the CLI command (and therefore
+    the GitHub Actions step) loudly rather than silently no-op.
+    """
+    halted = _fetch_halts_live()
+    if halted is None:
+        return None
+    database.set_halts_cache(halted)
     _cache_set("halts", "current", sorted(halted))
     return halted
 
@@ -460,7 +521,7 @@ def load_scan_inputs(
         broker_assets, existing_holdings, quotes = fetch_broker_scan_metadata([entry.symbol for entry in entries])
     except (OSError, RuntimeError, TypeError, ValueError):
         broker_assets, existing_holdings, quotes = {}, set(), {}
-    halted_symbols = fetch_current_halts()
+    halted_symbols = fetch_current_halts(database=database)
     assets = build_universe_assets(
         entries,
         database=database,
