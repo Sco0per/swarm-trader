@@ -104,9 +104,20 @@ of the routine's own model.
   skip) on those days rather than error, but this isn't independently
   verified for every holiday case.
 - **Cold start**: every run is a brand-new sandbox, so `poetry install`
-  reinstalls the full dependency set (langchain family included) from
-  scratch each time. Expect each routine to take a few minutes before it
-  even starts the actual command.
+  reinstalls the full dependency set from scratch each time. Expect each
+  routine to take a few minutes before it even starts the actual command.
+- **Telegram delivery doesn't work from inside these routines.** The
+  sandbox's egress proxy blocks outbound HTTPS to `api.telegram.org`
+  entirely (`connect_rejected`, "gateway answered 403 to CONNECT (policy
+  denial)" — confirmed via the proxy's own status endpoint, not a Telegram-
+  side error). Every completed `swing-trader` command still creates a
+  durable `notifications` row in the hosted database either way (see
+  `src/swing/notification_channels.py`), so nothing is lost -- it just
+  can't be delivered from here. Delivery instead runs from
+  `.github/workflows/deliver-telegram-notifications.yml`, a scheduled
+  GitHub Actions workflow (every 15 minutes) that has normal outbound
+  internet access: it connects to the same hosted Turso database and runs
+  `swing-trader drain-notifications` to send anything still PENDING.
 - **Earnings-date lookups still use yfinance**, not Alpaca — Alpaca's market
   data API has no earnings calendar at all. Yahoo Finance blocks this cloud
   environment's IP range for bulk price history (confirmed: 100%

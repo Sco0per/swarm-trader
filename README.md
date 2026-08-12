@@ -34,7 +34,7 @@ Every condition is evaluated in `src/swing/strategy.py`. A failed condition has 
 
 The deterministic scanner uses the versioned universe snapshot in `config/universe/`, then applies the required blacklist, security type, existing-holding, price, history, share-volume, dollar-volume, spread, tradability, restriction, halt, freshness, and event filters. Scan results persist the universe/scanner/config versions and rejection funnel.
 
-Alpaca supplies paper-account metadata, daily prices, quotes, and spreads. Earnings lookup is cached and bounded. Missing, stale, malformed, conflicting, or unavailable safety-critical data rejects; there is no optimistic data fallback.
+Alpaca supplies paper-account metadata, daily prices, quotes, and spreads. Alpaca's own asset metadata is not a reliable real-time halt feed, so halt status is cross-checked against NASDAQ's public regulatory trade-halts feed (`fetch_current_halts` in `src/swing/data_feed.py`); if that feed can't be fetched, halt status is unknown and the affected securities reject. Earnings lookup is cached and bounded. Missing, stale, malformed, conflicting, or unavailable safety-critical data rejects; there is no optimistic data fallback.
 
 The holdings and wash-sale blacklist is `config/do_not_trade.yaml`. It intentionally ships empty and must be populated before a first paper cycle.
 
@@ -114,12 +114,16 @@ flowchart LR
     FIX["one-off maintenance job\ne.g. poetry.lock repair"]
     GH -->|git pull| FIX
     FIX -->|"repo write via GitHub MCP tool only\n(direct git push is blocked by\nthe sandbox egress policy)"| GH
+
+    DB -->|PENDING notification rows| RELAY["GitHub Actions\ndeliver-telegram-notifications.yml\nswing-trader drain-notifications\n(every 15 min)"]
+    RELAY -->|sendMessage| TELEGRAM[("Telegram")]
 ```
 
-Two distinct kinds of automation write to two distinct places, and neither can touch the other's target:
+Three distinct kinds of automation write to three distinct places, and none can touch either of the others' targets:
 
 - **Trading agents** (`scan`, `run`, `reconcile`, `report`, `review-observations`) read code from GitHub but only ever write to the hosted database or, for `run` alone, to Alpaca's paper broker under an explicit environment gate. None of them has repo-write access, so a misbehaving trading agent cannot alter its own code or config.
 - **Maintenance jobs** (one-off fix jobs such as the `poetry.lock` regeneration after a dependency cleanup) do the opposite: they edit the repo and touch neither the trading database nor the broker. Their sandbox blocks a plain `git push` to GitHub outright (the egress proxy returns `403` regardless of credentials); a repo write has to go through the GitHub MCP tool (`create_or_update_file` / `push_files`) instead, with a byte-for-byte hash check afterward since a single corrupted character in a lockfile is worse than no fix at all.
+- **The notification relay** doesn't run in a Claude-hosted sandbox at all — it's a plain scheduled GitHub Actions workflow, because the sandboxes' egress policy also blocks outbound calls to `api.telegram.org` (confirmed via the proxy's own status endpoint: `connect_rejected`, "gateway answered 403 to CONNECT"). Trading agents already write every completed run's outcome to the hosted database as a durable, PENDING notification row regardless of whether delivery ever succeeds; this workflow is the only thing that actually drains that queue, since GitHub-hosted runners have normal outbound internet access. See `docs/CRON_AGENTS.md`'s "Known limitations" for the full story.
 
 ## Configuration and secrets
 
@@ -138,6 +142,7 @@ poetry run swing-trader run
 poetry run swing-trader positions
 poetry run swing-trader reconcile
 poetry run swing-trader analytics
+poetry run swing-trader drain-notifications
 poetry run swing-trader report daily
 poetry run swing-trader report weekly
 poetry run swing-trader paper-review intent.json
@@ -148,7 +153,7 @@ poetry run swing-trader record-live-fill fill.json
 poetry run swing-trader record-live-exit TRADE_ID EXIT_PRICE --reason "broker fill"
 ```
 
-`scan`, `status`, `positions`, `analytics`, and reports do not place orders. `run` can place Alpaca paper orders only when `EXECUTION_MODE=paper`, `TRADING_ENABLED=true`, every deterministic gate passes, and reconciliation is clean. `paper-review --submit`, `tighten-stop`, and `close` are explicit paper mutations; review their help and safety state before use.
+`scan`, `status`, `positions`, `analytics`, `drain-notifications`, and reports do not place orders. `drain-notifications` only attempts delivery of already-durable notification rows; it never reads or writes trading state. `run` can place Alpaca paper orders only when `EXECUTION_MODE=paper`, `TRADING_ENABLED=true`, every deterministic gate passes, and reconciliation is clean. `paper-review --submit`, `tighten-stop`, and `close` are explicit paper mutations; review their help and safety state before use.
 
 ## Tests
 
