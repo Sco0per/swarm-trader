@@ -27,10 +27,12 @@ sandbox later the same day can skip the network call entirely instead of
 re-paying it every run -- the local disk cache below only helps within a
 single process.
 
-Known limitation: Alpaca asset metadata is not a reliable real-time halt feed.
-Production assets therefore carry ``halt_status_known=False`` and the scanner
-rejects them with ``halt_status_unknown``.  This is intentionally fail-closed
-until a reliable halt source is integrated.
+Halt status: Alpaca asset metadata is not a reliable real-time halt feed, so
+production runs cross-check against NASDAQ's public regulatory trade-halts
+feed (``fetch_current_halts`` below) instead of trusting Alpaca's ``active``
+flag. If that feed can't be fetched or parsed, ``halt_status_known`` stays
+False and the scanner rejects with ``halt_status_unknown`` -- fail-closed,
+same as every other safety-critical input in this module.
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
+from xml.etree import ElementTree
 
 import pandas as pd
 import requests
@@ -57,10 +60,14 @@ if TYPE_CHECKING:
 CACHE_DIR = Path(__file__).resolve().parents[2] / ".cache" / "swing_data_feed"
 BAR_CACHE_TTL_SECONDS = 6 * 3600
 EARNINGS_CACHE_TTL_SECONDS = 24 * 3600
+HALTS_CACHE_TTL_SECONDS = 60
+HALTS_FETCH_TIMEOUT_SECONDS = 10
 REQUIRED_COLUMNS = ("open", "high", "low", "close", "volume")
 
 ALPACA_DATA_BASE = "https://data.alpaca.markets/v2"
 ALPACA_TRADING_BASE = "https://paper-api.alpaca.markets/v2"
+NASDAQ_HALTS_FEED_URL = "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts"
+_NASDAQ_HALTS_NS = {"ndaq": "http://www.nasdaqtrader.com/"}
 ALPACA_BATCH_SIZE = 50
 
 
@@ -334,6 +341,50 @@ def fetch_earnings_trading_days(symbol: str, database: "SwingDatabase | None" = 
     return fetch_earnings_trading_days_batch([symbol], database=database).get(symbol)
 
 
+def fetch_current_halts() -> set[str] | None:
+    """Currently-halted symbols from NASDAQ's public regulatory trade-halts feed.
+
+    The feed is a reverse-chronological log of recent halt/resumption events
+    (not just a "currently halted" list), covering all US-listed markets, not
+    only NASDAQ. A symbol's most recent entry is authoritative: an empty
+    ``ResumptionDate`` means it hasn't resumed yet. Entries can be months old
+    if a halt is still unresolved (e.g. regulatory-information halts), so
+    "not present in the feed" reliably means "no active halt on record" --
+    it's not a rolling window that ages out active halts.
+
+    Returns None, never an empty set, on any fetch/parse failure: an empty
+    set would silently claim "confirmed nothing is halted," which this
+    function cannot assert if the feed itself was unreachable. Callers must
+    treat None as unknown and fail closed, same as every other safety input.
+    """
+    cached = _cache_get("halts", "current", HALTS_CACHE_TTL_SECONDS)
+    if cached is not None:
+        return set(cached)
+    try:
+        response = requests.get(
+            NASDAQ_HALTS_FEED_URL,
+            timeout=HALTS_FETCH_TIMEOUT_SECONDS,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        response.raise_for_status()
+        root = ElementTree.fromstring(response.content)
+    except Exception:
+        return None
+    halted: set[str] = set()
+    seen: set[str] = set()
+    for item in root.findall(".//item"):
+        symbol_el = item.find("ndaq:IssueSymbol", _NASDAQ_HALTS_NS)
+        symbol = symbol_el.text.strip() if symbol_el is not None and symbol_el.text else None
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        resumption_el = item.find("ndaq:ResumptionDate", _NASDAQ_HALTS_NS)
+        if resumption_el is None or not (resumption_el.text or "").strip():
+            halted.add(symbol)
+    _cache_set("halts", "current", sorted(halted))
+    return halted
+
+
 def build_universe_assets(
     entries: list[UniverseEntry] | None = None,
     database: "SwingDatabase | None" = None,
@@ -341,6 +392,7 @@ def build_universe_assets(
     broker_assets: dict[str, dict] | None = None,
     existing_holdings: set[str] | None = None,
     quotes: dict[str, tuple[float, float, datetime]] | None = None,
+    halted_symbols: set[str] | None = None,
     production_metadata: bool = False,
 ) -> list[UniverseAsset]:
     entries = entries if entries is not None else UNIVERSE
@@ -360,9 +412,8 @@ def build_universe_assets(
                 asset_class=str(metadata.get("class", "unknown" if production_metadata else "us_equity")).lower(),
                 security_type=security_type,
                 is_tradable=bool(metadata.get("tradable")) if metadata else (None if production_metadata else True),
-                is_halted=False,
-                # TODO: integrate a reliable real-time halt feed; asset "active" is not sufficient proof.
-                halt_status_known=not production_metadata,
+                is_halted=(entry.symbol in halted_symbols) if halted_symbols is not None else False,
+                halt_status_known=(halted_symbols is not None) if production_metadata else True,
                 broker_restricted=str(metadata.get("status", "unknown")).lower() != "active" if metadata else production_metadata,
                 existing_holding=entry.symbol in (existing_holdings or set()),
                 is_leveraged_or_inverse=False,
@@ -409,12 +460,14 @@ def load_scan_inputs(
         broker_assets, existing_holdings, quotes = fetch_broker_scan_metadata([entry.symbol for entry in entries])
     except (OSError, RuntimeError, TypeError, ValueError):
         broker_assets, existing_holdings, quotes = {}, set(), {}
+    halted_symbols = fetch_current_halts()
     assets = build_universe_assets(
         entries,
         database=database,
         broker_assets=broker_assets,
         existing_holdings=existing_holdings,
         quotes=quotes,
+        halted_symbols=halted_symbols,
         production_metadata=True,
     )
     bars_by_symbol = {entry.symbol: bars[entry.symbol] for entry in entries if entry.symbol in bars}
