@@ -1,0 +1,46 @@
+name: Deliver pending Telegram notifications
+
+# The scheduled cloud routines (see docs/CRON_AGENTS.md) run in a sandbox
+# whose network egress policy blocks api.telegram.org, so notification rows
+# they create stay PENDING forever if nothing else drains them. GitHub-hosted
+# runners have normal outbound internet access, so this workflow does the
+# delivery instead: it connects to the same hosted Turso database and
+# attempts to send any PENDING rows via Telegram. Safe to run repeatedly --
+# `swing-trader drain-notifications` only touches notification delivery
+# status, never trading state.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  drain-notifications:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Cache Poetry dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pypoetry
+          key: poetry-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-ansi
+
+      - name: Drain pending notifications
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: poetry run swing-trader drain-notifications

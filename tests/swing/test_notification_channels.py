@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from src.swing import cli as cli_module
 from src.swing.config import SwingSettings, TelegramSettings
 from src.swing.notification_channels import (
@@ -99,3 +101,32 @@ def test_channel_if_configured_returns_telegram_channel_when_both_set(tmp_path):
     )
     channel = cli_module._channel_if_configured(settings)
     assert isinstance(channel, TelegramChannel)
+
+
+def test_drain_notifications_cli_command_delivers_pending_rows(monkeypatch, tmp_path, capsys, database):
+    _emit(database)
+    monkeypatch.setenv("SWING_DATABASE_PATH", str(tmp_path / "swing.db"))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "test-chat")
+    fake_channel = FakeNotificationChannel()
+    monkeypatch.setattr(cli_module, "TelegramChannel", lambda *args, **kwargs: fake_channel)
+    monkeypatch.setattr("sys.argv", ["swing-trader", "drain-notifications"])
+
+    cli_module.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {"attempted": 1, "sent": 1, "failed": 0}
+    assert fake_channel.sent == ["[INFO] No trade found (0 candidates)"]
+
+
+def test_drain_notifications_cli_command_is_a_noop_without_telegram_configured(monkeypatch, tmp_path, capsys, database):
+    _emit(database)
+    monkeypatch.setenv("SWING_DATABASE_PATH", str(tmp_path / "swing.db"))
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.setattr("sys.argv", ["swing-trader", "drain-notifications"])
+
+    cli_module.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {"attempted": 0, "sent": 0, "failed": 0}

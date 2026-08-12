@@ -138,6 +138,7 @@ def _run() -> int:
     sub.add_parser("status", help="Show execution mode, safety latches, and durable record counts")
     sub.add_parser("positions", help="Show durable open swing positions and lifecycle state without contacting a broker")
     sub.add_parser("analytics", help="Calculate expectancy-first analytics")
+    sub.add_parser("drain-notifications", help="Attempt delivery of PENDING notification rows via the configured channel (e.g. Telegram); safe to run repeatedly")
     report = sub.add_parser("report", help="Generate a persistent report")
     report.add_argument("type", choices=["daily", "weekly", "20-trade", "50-trade", "100-trade", "graduation"])
     kill = sub.add_parser("kill-switch", help="Turn the global new-order kill switch on or off")
@@ -223,6 +224,8 @@ def _run() -> int:
         print(json.dumps({"positions": positions, "count": len(positions)}, indent=2))
     elif args.command == "analytics":
         print(json.dumps(reports.dashboard_payload(), indent=2, default=str))
+    elif args.command == "drain-notifications":
+        print(json.dumps(drain_pending_notifications(database, _channel_if_configured(settings)), indent=2))
     elif args.command == "report":
         print(reports.generate(args.type))
     elif args.command == "kill-switch":
