@@ -161,16 +161,27 @@ of the routine's own model.
   original local-disk-cache-then-live-fetch behavior -- so it degrades safely
   in local dev (no `database` passed, or no Turso configured) and works from
   a blocked sandbox by reading what the relay already fetched.
-- **`ANTHROPIC_API_KEY` was not set in this environment as of 2026-08-12**,
-  confirmed via a direct presence check (not just an unfunded key) --
-  `llm_backend_configured` read `false` and every candidate resolved
-  to `NO_TRADE` regardless of score. Added to the environment's variables
-  since; `_backend_if_configured()` in `src/swing/cli.py` does a plain,
-  uncached `os.getenv` presence check each process, so no code change was
-  needed -- verify by checking `llm_backend_configured: true` in the next
-  `decide-trade-agent` run's JSON output. Note a present-but-empty value
-  (`ANTHROPIC_API_KEY=`) is still falsy in Python and would silently read as
-  not-configured, so confirm the value itself, not just its presence.
+- **`ANTHROPIC_API_KEY` is still not set in this environment, confirmed again
+  via a live direct check on 2026-08-12** (a fast one-off diagnostic job that
+  skips the whole scan and makes a real `anthropic.Anthropic(...).messages.create()`
+  call the same way `src/swing/agents.py` does) -- `llm_backend_configured`
+  reads `false` and every candidate resolves to `NO_TRADE` regardless of
+  score. `MODEL_FALLBACK` *is* set (`claude-haiku-4-5-20251001`), so once the
+  key itself is actually added, model resolution will not be a second
+  blocker. `_backend_if_configured()` in `src/swing/cli.py` does a plain,
+  uncached `os.getenv` presence check each process, so no code change is
+  needed once the key is genuinely present -- verify with the same fast
+  diagnostic pattern (see git history for the exact script) rather than
+  waiting on a full `run` cycle, which takes ~10-15 minutes just to finish
+  scanning before it would even reach the LLM call. Note a present-but-empty
+  value (`ANTHROPIC_API_KEY=`) is still falsy in Python and would silently
+  read as not-configured, so confirm the value itself, not just its presence.
+  **Separately, note `agents.py:_model()` raises `ModelUnavailable` if no
+  role-specific model or `MODEL_FALLBACK` is configured, and
+  `agents.py:analyze()`'s per-candidate `except Exception: continue` (line
+  ~307) swallows that silently** -- a missing model name alone (independent
+  of the API key) would also present as an innocuous `proposals_generated: 0`
+  with no visible error, worth remembering if this ever needs re-diagnosing.
 - **Earnings-date lookups still use yfinance**, not Alpaca — Alpaca's market
   data API has no earnings calendar at all. Yahoo Finance blocks this cloud
   environment's IP range for bulk price history (confirmed: 100%
