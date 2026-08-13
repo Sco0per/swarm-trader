@@ -22,6 +22,7 @@ class NotificationType(str, Enum):
     PAPER_EXPERIMENT_MILESTONE = "PAPER_EXPERIMENT_MILESTONE"
     RUN_CYCLE_SUMMARY = "RUN_CYCLE_SUMMARY"
     RUN_FAILED = "RUN_FAILED"
+    AUTO_FIX_RESULT = "AUTO_FIX_RESULT"
 
 
 class NotificationService:
@@ -56,4 +57,14 @@ class NotificationService:
             reason_code=result,
             payload={"date": date, "candidates": candidates, "opened": opened, "closed": closed},
             dedupe_key=f"daily:{date}",
+        )
+
+    def auto_fix_result(self, *, notification_id: int, outcome: str, summary: str) -> bool:
+        return self.emit(
+            NotificationType.AUTO_FIX_RESULT,
+            severity="INFO",
+            title=f"Auto-fix {outcome}: incident #{notification_id}",
+            reason_code=outcome.upper(),
+            payload={"notification_id": notification_id, "summary": summary},
+            dedupe_key=f"autofix:{notification_id}",
         )

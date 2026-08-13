@@ -198,6 +198,7 @@ class SwingSettings:
     execution_mode: str = "paper"
     trading_enabled: bool = False
     live_acknowledgement: str = ""
+    watchdog_auto_push_enabled: bool = False
     strategy_version: str = "SWING_V1.0"
     config_version: str = "SWING_CONFIG_V1"
     scanner_version: str = "deterministic-swing-scanner-v2"
@@ -382,6 +383,7 @@ def load_settings() -> SwingSettings:
         execution_mode=os.getenv("EXECUTION_MODE", "paper").lower(),
         trading_enabled=_bool("TRADING_ENABLED", False),
         live_acknowledgement=os.getenv("LIVE_TRADING_ACK", ""),
+        watchdog_auto_push_enabled=_bool("WATCHDOG_AUTO_PUSH_ENABLED", False),
         strategy_version=os.getenv("STRATEGY_VERSION", "SWING_V1.0"),
         config_version=os.getenv("CONFIG_VERSION", "SWING_CONFIG_V1"),
         scanner_version=os.getenv("SCANNER_VERSION", "deterministic-swing-scanner-v2"),

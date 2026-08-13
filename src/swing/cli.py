@@ -140,6 +140,11 @@ def _run() -> int:
     sub.add_parser("analytics", help="Calculate expectancy-first analytics")
     sub.add_parser("drain-notifications", help="Attempt delivery of PENDING notification rows via the configured channel (e.g. Telegram); safe to run repeatedly")
     sub.add_parser("update-halts", help="Fetch NASDAQ's public trade-halts feed and store the current halted-symbol set in the hosted database; run only where nasdaqtrader.com is reachable (see .github/workflows/deliver-halts-feed.yml)")
+    sub.add_parser("watchdog-check", help="List RUN_FAILED notifications newer than the crash-watchdog's last-handled incident; read-only")
+    watchdog_resolve = sub.add_parser("watchdog-resolve", help="Advance the crash-watchdog's watermark past one incident and record its outcome")
+    watchdog_resolve.add_argument("notification_id", type=int)
+    watchdog_resolve.add_argument("--outcome", required=True, choices=["auto_fixed", "pr_opened", "unresolved"])
+    watchdog_resolve.add_argument("--summary", required=True)
     report = sub.add_parser("report", help="Generate a persistent report")
     report.add_argument("type", choices=["daily", "weekly", "20-trade", "50-trade", "100-trade", "graduation"])
     kill = sub.add_parser("kill-switch", help="Turn the global new-order kill switch on or off")
@@ -241,6 +246,14 @@ def _run() -> int:
         )
         if halted is None:
             return 2
+    elif args.command == "watchdog-check":
+        since_id = int(database.get_state("watchdog_last_notification_id", 0))
+        failures = database.unresolved_run_failures(since_id)
+        print(json.dumps({"since_id": since_id, "count": len(failures), "failures": failures}, indent=2, default=str))
+    elif args.command == "watchdog-resolve":
+        NotificationService(database).auto_fix_result(notification_id=args.notification_id, outcome=args.outcome, summary=args.summary)
+        database.set_state("watchdog_last_notification_id", args.notification_id, "crash-watchdog-agent")
+        print(json.dumps({"notification_id": args.notification_id, "outcome": args.outcome}, indent=2))
     elif args.command == "report":
         print(reports.generate(args.type))
     elif args.command == "kill-switch":

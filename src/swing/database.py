@@ -2014,6 +2014,13 @@ class SwingDatabase:
         except self.integrity_errors:
             return False
 
+    def unresolved_run_failures(self, since_id: int = 0) -> list[dict[str, Any]]:
+        """RUN_FAILED notifications newer than the crash-watchdog's last-handled id."""
+        return self.rows(
+            "SELECT * FROM notifications WHERE event_type='RUN_FAILED' AND notification_id > ? ORDER BY notification_id ASC",
+            (since_id,),
+        )
+
     def mark_notification_delivery(self, notification_id: int, status: str) -> None:
         if status not in {"SENT", "FAILED"}:
             raise ValueError("status must be SENT or FAILED")
