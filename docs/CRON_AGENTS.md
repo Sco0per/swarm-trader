@@ -49,16 +49,21 @@ Turso's free tier (5GB storage, 500M row reads/month, 10M row writes/month)
 is far beyond what this system needs — a handful of routine runs a day, each
 doing lightweight reads/writes, is nowhere close to those limits.
 
-## The eight scheduled routines
+## The nine scheduled routines
 
 The first seven routines each run exactly one `swing-trader` subcommand. The
-eighth is a tightly bounded crash watchdog described below. None of them touch
-the Robinhood live-trading path (`live-ticket`, `record-live-fill`,
-`record-live-exit`) — those remain human-only per `docs/ROBINHOOD_MCP.md`,
-and Robinhood's MCP connector must never be attached to any of these
-routines (routine creation auto-attaches every connected MCP connector by
-default — always `clear_mcp_connections: true` immediately after creating
-one, or it will silently gain live-order-placement tools).
+eighth is a tightly bounded crash watchdog described below. The ninth is the
+real-volume relay described further below, and is the **one deliberate
+exception** to the next paragraph: it is the only routine permitted to keep
+the Robinhood MCP connector attached, and only the read-only market-data
+tools on it.
+
+None of the other eight touch the Robinhood live-trading path (`live-ticket`,
+`record-live-fill`, `record-live-exit`) — those remain human-only per
+`docs/ROBINHOOD_MCP.md`, and Robinhood's MCP connector must never be attached
+to any of them (routine creation auto-attaches every connected MCP connector
+by default — always `clear_mcp_connections: true` immediately after creating
+one of these eight, or it will silently gain live-order-placement tools).
 
 Use an `America/New_York` timezone-aware scheduler, not fixed UTC expressions.
 The environment keys below make every time configurable without changing code.
@@ -73,6 +78,7 @@ The environment keys below make every time configurable without changing code.
 | 6 | daily-report-agent | `SCHEDULE_DAILY_REPORT_ET=16:15` weekdays | `report daily` | Turso only |
 | 7 | weekly-lessons-agent | `SCHEDULE_WEEKLY_LESSONS_ET=Sunday 18:00` | `review-observations` | Turso only |
 | 8 | crash-watchdog-agent | every 30 minutes (`*/30 * * * *`) | `watchdog-check`, then at most one bounded repair attempt and `watchdog-resolve` | Turso + repository read/write + GitHub MCP |
+| 9 | volume-relay-agent | once daily, weekday mornings before the initial scan | `update-volume-cache <file>` | Turso + the Robinhood MCP historicals tool (read-only) |
 
 Each agent prompt is generated from `src/swing/scheduling.py`. It permits its
 single listed subcommand and explicitly forbids every other shell command and
@@ -163,6 +169,74 @@ trigger one run, and review the PR, regression test, single-command rerun, and
 `AUTO_FIX_RESULT` record by hand. Only after this end-to-end trial passes should
 the routine be switched to `*/30 * * * *`; enabling direct auto-push is a
 separate later decision.
+
+## Real-volume relay routine
+
+Alpaca's own `/v2/stocks/bars` feed is called with `feed=iex` in
+`src/swing/data_feed.py` because the paper/free Alpaca plan has no SIP
+entitlement (a `feed=sip` call returns `403 subscription does not permit
+querying recent SIP data`, confirmed 2026-08-13). IEX is one exchange among
+roughly sixteen and typically carries only a few percent of a stock's true
+consolidated volume, so `adv20`/`average_dollar_volume` computed from it
+understate real liquidity by roughly 10-50x — confirmed directly: AAPL/MSFT/
+NVDA showed IEX 20-day averages of 1.91M / 1.35M / 4.50M shares against
+Robinhood-sourced real averages of ~40-75M / ~25-110M / ~90-160M for the same
+dates. This is why `scan` was rejecting roughly 400 of 439 supposedly-liquid
+universe symbols on `minimum_average_volume` alone, most of them obviously
+liquid mega-caps — not the strategy being too strict, a broken liquidity
+input. `config.py`'s `minimum_average_volume` floor (1,000,000, see the
+"Liquidity filters may be stricter, but not weaker" guard) is intentionally
+immutable and was correctly left untouched; the fix is to the data feeding it.
+
+Finnhub and Polygon (free tiers, no key required to test reachability) were
+both confirmed **blocked** the same way as Telegram/NASDAQ below — the
+sandbox's egress proxy returns `403` on the CONNECT tunnel to both hosts
+before any request reaches them, an allowlist policy, not a rate limit. A
+GitHub Actions relay (the pattern used for Telegram/halts below) would work
+for either but is unbuilt. Instead, this routine uses the **Robinhood MCP
+connector** already available to Claude Code sessions on this account: a
+scheduled routine created with that connector intentionally still attached
+(not cleared) can call `mcp__Robinhood_agent__get_equity_historicals`
+directly and unattended — confirmed with two live test routines on
+2026-08-13, including a realistic 10-symbol batch mixing large-caps and two
+sector ETFs (`XLK`, `SPY`), all returning clean real volume with no
+permission prompt and no gaps.
+
+The routine, once daily on weekday mornings before `initial-scan-agent`:
+
+1. Calls `get_equity_historicals` for the scan universe in batches of up to
+   10 symbols (the tool's documented per-call limit), `interval=day`, a
+   ~30-day window.
+2. For each symbol, computes the same 20-day mean-volume and mean-dollar-
+   volume `market.py` already computes from bars (`tail(20).mean()` of
+   `volume` and `close * volume` respectively) — same formula, real input.
+3. Writes the result as one JSON file and calls `swing-trader
+   update-volume-cache <file>`, which upserts `real_volume_cache` (schema:
+   `symbol`, `average_volume`, `average_dollar_volume`, `updated_at`) via
+   `SwingDatabase.set_volume_cache_many()`.
+
+`build_universe_assets()` in `data_feed.py` reads that cache
+(`get_volume_cache_many`, TTL `data_feed.REAL_VOLUME_CACHE_TTL_SECONDS`, 4
+days — generous enough to survive a weekend or one missed run) and threads
+`real_average_volume`/`real_average_dollar_volume` onto each `UniverseAsset`.
+`market.py`'s liquidity check and `_candidate()` both prefer these fields
+over the Alpaca-bar-derived estimate when fresh, and fall back to the
+original (understated but non-fatal) computation when a symbol's cache entry
+is missing or stale — this routine failing or lagging degrades accuracy, not
+safety.
+
+Guardrails, same spirit as the other eight:
+
+- This is the only routine allowed to keep the Robinhood MCP connector
+  attached, and only its read-only historicals/quotes tools — never
+  `place_option_order`, `place_equity_order`, `review_*_order`, or any other
+  order-placement/watchlist-mutation tool from that connector.
+- Never run any `swing-trader` command other than `update-volume-cache`. In
+  particular, never `scan`, `run`, or any live/broker/halt-clearing command.
+- Never edit `risk.py`, `execution.py`, `strategy.py`, `config.py`, or any
+  broker/order-submission file.
+- Read-only against the market: it only fetches historical bars and writes to
+  the volume cache table; it never places or reviews an order.
 
 ## Known limitations
 

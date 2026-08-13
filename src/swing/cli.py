@@ -141,6 +141,11 @@ def _run() -> int:
     sub.add_parser("analytics", help="Calculate expectancy-first analytics")
     sub.add_parser("drain-notifications", help="Attempt delivery of PENDING notification rows via the configured channel (e.g. Telegram); safe to run repeatedly")
     sub.add_parser("update-halts", help="Fetch NASDAQ's public trade-halts feed and store the current halted-symbol set in the hosted database; run only where nasdaqtrader.com is reachable (see .github/workflows/deliver-halts-feed.yml)")
+    volume_cache = sub.add_parser(
+        "update-volume-cache",
+        help="Store real per-symbol average volume/dollar volume in the hosted database; run only where a real consolidated-volume source (e.g. the Robinhood MCP tool) is reachable (see docs/CRON_AGENTS.md)",
+    )
+    volume_cache.add_argument("input", type=Path, help='JSON file: {"SYMBOL": {"average_volume": <float>, "average_dollar_volume": <float>}, ...}')
     sub.add_parser("watchdog-check", help="List RUN_FAILED notifications newer than the crash-watchdog's last-handled incident; read-only")
     watchdog_resolve = sub.add_parser("watchdog-resolve", help="Advance the crash-watchdog's watermark past one incident and record its outcome")
     watchdog_resolve.add_argument("notification_id", type=int)
@@ -247,6 +252,11 @@ def _run() -> int:
         )
         if halted is None:
             return 2
+    elif args.command == "update-volume-cache":
+        payload = json.loads(args.input.read_text(encoding="utf-8"))
+        entries = [(symbol, float(values["average_volume"]), float(values["average_dollar_volume"])) for symbol, values in payload.items()]
+        database.set_volume_cache_many(entries)
+        print(json.dumps({"symbols_updated": len(entries)}, indent=2))
     elif args.command == "watchdog-check":
         since_id = int(database.get_state("watchdog_last_notification_id", 0))
         failures = database.unresolved_run_failures(since_id)

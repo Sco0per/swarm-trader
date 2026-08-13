@@ -444,3 +444,44 @@ def test_scanner_scores_viable_asset_and_excludes_banned(settings):
     )
     assert [candidate.ticker for candidate in results] == ["GOOD"]
     assert sum(results[0].score_components.values()) == pytest.approx(results[0].score)
+
+
+def test_scanner_prefers_real_average_volume_over_bar_derived_estimate(settings):
+    """Alpaca's IEX-only feed understates volume by roughly 10-50x (see
+    data_feed.py's module docstring); a fresh real-volume cache reading must
+    reach the resulting candidate's average_daily_volume, which risk.py's
+    position sizing reads -- not just clear the liquidity filter and then be
+    silently dropped before _candidate() builds the output."""
+    index = pd.date_range(end=datetime.now(timezone.utc), periods=220, freq="B")
+    close = np.linspace(80, 100, len(index))
+    frame = pd.DataFrame(
+        {"open": close - 0.25, "high": close + 1, "low": close - 1, "close": close, "volume": np.full(len(index), 2_000_000)},
+        index=index,
+    )
+    benchmark_close = np.linspace(75, 90, len(index))
+    benchmark = pd.DataFrame(
+        {"open": benchmark_close - 0.25, "high": benchmark_close + 1, "low": benchmark_close - 1, "close": benchmark_close, "volume": np.full(len(index), 2_000_000)},
+        index=index,
+    )
+    real_volume = settings.minimum_average_volume * 10
+    real_dollar_volume = settings.minimum_average_dollar_volume * 10
+    asset = UniverseAsset(
+        "GOOD",
+        sector="Technology",
+        earnings_trading_days=10,
+        prohibited_event_risk=False,
+        bid=99.95,
+        ask=100.05,
+        real_average_volume=real_volume,
+        real_average_dollar_volume=real_dollar_volume,
+    )
+    results = DeterministicSwingScanner(settings).scan(
+        [asset],
+        {"GOOD": frame},
+        spy_bars=benchmark,
+        qqq_bars=benchmark,
+        source="test-feed",
+    )
+    assert [candidate.ticker for candidate in results] == ["GOOD"]
+    assert results[0].average_daily_volume == real_volume
+    assert results[0].average_daily_volume != pytest.approx(2_000_000.0)

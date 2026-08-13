@@ -27,6 +27,22 @@ def test_halts_cache_round_trips_through_database(database):
     assert database.get_halts_cache(ttl_seconds=0) is None
 
 
+def test_volume_cache_round_trips_through_database(database):
+    assert database.get_volume_cache_many(["AAA", "BBB"], ttl_seconds=86400) == {}
+
+    database.set_volume_cache_many([("AAA", 41_657_768.0, 12_345_678_900.0), ("BBB", 29_001_478.0, 9_876_543_210.0)])
+    cached = database.get_volume_cache_many(["AAA", "BBB", "CCC"], ttl_seconds=86400)
+    assert cached == {
+        "AAA": {"average_volume": 41_657_768.0, "average_dollar_volume": 12_345_678_900.0},
+        "BBB": {"average_volume": 29_001_478.0, "average_dollar_volume": 9_876_543_210.0},
+    }
+
+    assert database.get_volume_cache_many(["AAA"], ttl_seconds=0) == {}
+
+    database.set_volume_cache_many([("AAA", 50_000_000.0, 15_000_000_000.0)])
+    assert database.get_volume_cache_many(["AAA"], ttl_seconds=86400) == {"AAA": {"average_volume": 50_000_000.0, "average_dollar_volume": 15_000_000_000.0}}
+
+
 def test_universe_excludes_leveraged_and_uses_valid_sectors():
     assert len(UNIVERSE_SYMBOLS) == len(set(UNIVERSE_SYMBOLS))
     assert not (set(UNIVERSE_SYMBOLS) & LEVERAGED_OR_INVERSE_ETFS)
@@ -232,13 +248,39 @@ def test_build_universe_assets_passes_database_through_for_stocks(monkeypatch, t
     monkeypatch.setattr(data_feed, "fetch_earnings_trading_days_batch", _fake_batch)
     from src.swing.universe import UniverseEntry
 
-    sentinel_database = object()
+    class _SentinelDatabase:
+        """Bare identity sentinel that also satisfies the real-volume-cache lookup."""
+
+        def get_volume_cache_many(self, symbols, ttl_seconds):
+            return {}
+
+    sentinel_database = _SentinelDatabase()
     entries = [UniverseEntry(symbol="AAA", sector="Technology", is_etf=False)]
     assets = data_feed.build_universe_assets(entries, database=sentinel_database)  # type: ignore[arg-type]
 
     assert seen["symbols"] == ["AAA"]
     assert seen["database"] is sentinel_database
     assert assets[0].earnings_trading_days is None
+    assert assets[0].real_average_volume is None
+
+
+def test_build_universe_assets_threads_fresh_real_volume_and_leaves_uncached_symbols_none(monkeypatch, tmp_path, database):
+    monkeypatch.setattr(data_feed, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(data_feed, "fetch_earnings_trading_days_batch", lambda symbols, database=None: {symbol: None for symbol in symbols})
+    from src.swing.universe import UniverseEntry
+
+    database.set_volume_cache_many([("CACHED", 41_657_768.0, 12_345_678_900.0)])
+    entries = [
+        UniverseEntry(symbol="CACHED", sector="Technology", is_etf=False),
+        UniverseEntry(symbol="UNCACHED", sector="Technology", is_etf=False),
+    ]
+    assets = data_feed.build_universe_assets(entries, database=database)
+    by_symbol = {asset.symbol: asset for asset in assets}
+
+    assert by_symbol["CACHED"].real_average_volume == 41_657_768.0
+    assert by_symbol["CACHED"].real_average_dollar_volume == 12_345_678_900.0
+    assert by_symbol["UNCACHED"].real_average_volume is None
+    assert by_symbol["UNCACHED"].real_average_dollar_volume is None
 
 
 _HALTS_FEED_XML = """<?xml version="1.0" encoding="utf-8"?>

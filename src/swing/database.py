@@ -405,6 +405,17 @@ CREATE TABLE IF NOT EXISTS nasdaq_halts_cache (
     updated_at TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'nasdaqtrader_rss'
 );
+-- Real consolidated-tape volume, per symbol. The cloud-routine sandboxes'
+-- own Alpaca feed is IEX-only (see data_feed.py's module docstring) and
+-- understates volume by roughly 10-50x, so market.py's liquidity check
+-- prefers a fresh row here when one exists. Written only by the volume-relay
+-- routine via `swing-trader update-volume-cache` (see docs/CRON_AGENTS.md).
+CREATE TABLE IF NOT EXISTS real_volume_cache (
+    symbol TEXT PRIMARY KEY,
+    average_volume REAL NOT NULL,
+    average_dollar_volume REAL NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS risk_snapshots (
     snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
     observed_at TEXT NOT NULL,
@@ -871,6 +882,42 @@ class SwingDatabase:
                    updated_at=excluded.updated_at, source=excluded.source""",
                 (json.dumps(sorted(halted_symbols)), _now(), source),
             )
+
+    def get_volume_cache_many(self, symbols: list[str], ttl_seconds: int) -> dict[str, dict[str, float]]:
+        """Bulk-read fresh real-volume cache entries, keyed by symbol.
+
+        Written only by the volume-relay routine (`swing-trader
+        update-volume-cache`), which reaches real consolidated volume through
+        a Robinhood MCP tool that plain sandboxed Python code cannot call
+        itself. Symbols with no fresh row are simply absent from the result --
+        callers (market.py) fall back to their own Alpaca-derived estimate for
+        those. See docs/CRON_AGENTS.md.
+        """
+        if not symbols:
+            return {}
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)).isoformat()
+        placeholders = ",".join("?" for _ in symbols)
+        with self.connect() as connection:
+            cursor = connection.execute(
+                f"SELECT symbol, average_volume, average_dollar_volume FROM real_volume_cache WHERE updated_at >= ? AND symbol IN ({placeholders})",
+                (cutoff, *symbols),
+            )
+            rows = [_row_to_dict(cursor, row) for row in cursor.fetchall()]
+        return {row["symbol"]: {"average_volume": float(row["average_volume"]), "average_dollar_volume": float(row["average_dollar_volume"])} for row in rows}
+
+    def set_volume_cache_many(self, entries: list[tuple[str, float, float]]) -> None:
+        """entries: (symbol, average_volume, average_dollar_volume) tuples. Called only by the relay."""
+        if not entries:
+            return
+        now = _now()
+        with self.connect() as connection:
+            for symbol, average_volume, average_dollar_volume in entries:
+                connection.execute(
+                    """INSERT INTO real_volume_cache(symbol, average_volume, average_dollar_volume, updated_at) VALUES(?,?,?,?)
+                       ON CONFLICT(symbol) DO UPDATE SET average_volume=excluded.average_volume,
+                       average_dollar_volume=excluded.average_dollar_volume, updated_at=excluded.updated_at""",
+                    (symbol, average_volume, average_dollar_volume, now),
+                )
 
     def record_candidate(
         self,

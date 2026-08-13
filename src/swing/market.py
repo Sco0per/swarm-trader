@@ -52,6 +52,8 @@ class UniverseAsset:
     bid: float | None = None
     ask: float | None = None
     quote_timestamp: datetime | None = None
+    real_average_volume: float | None = None
+    real_average_dollar_volume: float | None = None
 
 
 @dataclass(frozen=True)
@@ -285,8 +287,19 @@ class DeterministicSwingScanner:
             close = frame["close"]
             price = float(close.iloc[-1])
             liquidity_window = self.settings.strategy.short_ema_period
-            adv20 = float(frame["volume"].tail(liquidity_window).mean())
-            average_dollar_volume = float((frame["close"] * frame["volume"]).tail(liquidity_window).mean())
+            # Alpaca's own feed is IEX-only and understates volume by roughly
+            # 10-50x (see data_feed.py's module docstring), so a fresh real
+            # consolidated-volume reading from the hosted cache takes
+            # precedence when available; falling back to the Alpaca-derived
+            # estimate keeps this filter working even when the cache is cold.
+            if asset.real_average_volume is not None:
+                adv20 = asset.real_average_volume
+            else:
+                adv20 = float(frame["volume"].tail(liquidity_window).mean())
+            if asset.real_average_dollar_volume is not None:
+                average_dollar_volume = asset.real_average_dollar_volume
+            else:
+                average_dollar_volume = float((frame["close"] * frame["volume"]).tail(liquidity_window).mean())
             if price <= self.settings.minimum_price:
                 report.reject(symbol, "liquidity_history", "minimum_price", feature_values={"price": price, "minimum_price": self.settings.minimum_price})
                 continue
@@ -377,6 +390,7 @@ class DeterministicSwingScanner:
                 spread,
                 validation,
                 score,
+                adv20,
             )
             results.append(candidate)
             if score.route in {"strong", "very_strong"}:
@@ -415,6 +429,7 @@ class DeterministicSwingScanner:
         spread: float,
         validation,
         score,
+        adv20: float,
     ) -> SwingCandidate:
         close = frame["close"]
         price = float(close.iloc[-1])
@@ -431,7 +446,6 @@ class DeterministicSwingScanner:
         stock_rs = float(validation.features.get("stock_rs_spy") or 0)
         stock_sector_rs = validation.features.get("stock_rs_sector")
         sector_trend = "UP" if sector_frame is not None and sector_frame["close"].iloc[-1] > sector_frame["close"].rolling(self.settings.strategy.medium_ma_period).mean().iloc[-1] else "UNKNOWN"
-        adv = float(frame["volume"].tail(self.settings.strategy.short_ema_period).mean())
         market_timestamp = None
         if isinstance(frame.index, pd.DatetimeIndex) and len(frame.index):
             stamp = frame.index[-1]
@@ -455,7 +469,7 @@ class DeterministicSwingScanner:
             stock_relative_strength_spy=stock_rs,
             stock_relative_strength_sector=stock_sector_rs,
             price=price,
-            average_daily_volume=adv,
+            average_daily_volume=adv20,
             spread_pct=spread,
             rsi=rsi(close),
             macd=macd(close),

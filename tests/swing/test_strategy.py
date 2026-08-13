@@ -253,6 +253,26 @@ def test_liquidity_price_spread_and_history_boundaries_reject(settings, mutation
     assert report.rejection_counts[reason] == 1
 
 
+def test_real_average_volume_override_rejects_below_floor_even_when_bars_alone_would_pass(settings):
+    """Alpaca's IEX-only feed understates volume; a fresh real-volume cache
+    reading below the floor must still reject even though the bars alone
+    (flat 2M-share volume) comfortably clear it -- the override isn't a
+    one-way ratchet that can only raise the effective liquidity floor."""
+    bars, spy = _trend_inputs()
+    asset = UniverseAsset(
+        "BOUND",
+        earnings_trading_days=30,
+        prohibited_event_risk=False,
+        bid=99.75,
+        ask=100.25,
+        real_average_volume=settings.minimum_average_volume - 1,
+        real_average_dollar_volume=settings.minimum_average_dollar_volume * 10,
+    )
+    scanner = DeterministicSwingScanner(settings)
+    _, report = scanner.scan_with_report([asset], {"BOUND": bars}, spy_bars=spy, qqq_bars=spy, retrieved_at=AS_OF)
+    assert report.rejection_counts["minimum_average_volume"] == 1
+
+
 def test_blacklist_leveraged_etf_and_unloadable_blacklist_fail_closed(settings, tmp_path):
     blacklist = tmp_path / "blacklist.yaml"
     blacklist.write_text("symbols:\n  - BLOCK\nsubstantially_identical: []\n", encoding="utf-8")

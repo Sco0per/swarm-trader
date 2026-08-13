@@ -63,6 +63,11 @@ EARNINGS_CACHE_TTL_SECONDS = 24 * 3600
 HALTS_CACHE_TTL_SECONDS = 60
 HALTS_DB_CACHE_TTL_SECONDS = 2 * 3600  # see cron cadence note in deliver-halts-feed.yml
 HALTS_FETCH_TIMEOUT_SECONDS = 10
+# Generous enough to survive a weekend or a single missed weekday run of the
+# volume-relay routine (see docs/CRON_AGENTS.md); a stale/missing entry just
+# falls back to market.py's own Alpaca-derived estimate, so erring long here
+# costs accuracy, not safety.
+REAL_VOLUME_CACHE_TTL_SECONDS = 4 * 24 * 3600
 REQUIRED_COLUMNS = ("open", "high", "low", "close", "volume")
 
 ALPACA_DATA_BASE = "https://data.alpaca.markets/v2"
@@ -459,12 +464,14 @@ def build_universe_assets(
     entries = entries if entries is not None else UNIVERSE
     stock_symbols = [entry.symbol for entry in entries if not entry.is_etf]
     earnings_by_symbol = fetch_earnings_trading_days_batch(stock_symbols, database=database) if stock_symbols else {}
+    real_volume_by_symbol = database.get_volume_cache_many([entry.symbol for entry in entries], REAL_VOLUME_CACHE_TTL_SECONDS) if database is not None else {}
     safety_data_retrieved_at = datetime.now(timezone.utc)
     assets: list[UniverseAsset] = []
     for entry in entries:
         metadata = (broker_assets or {}).get(entry.symbol, {})
         quote = (quotes or {}).get(entry.symbol)
         security_type = "etf" if entry.is_etf else "common_stock"
+        real_volume = real_volume_by_symbol.get(entry.symbol)
         assets.append(
             UniverseAsset(
                 symbol=entry.symbol,
@@ -487,6 +494,8 @@ def build_universe_assets(
                 bid=quote[0] if quote else None,
                 ask=quote[1] if quote else None,
                 quote_timestamp=quote[2] if quote else None,
+                real_average_volume=real_volume["average_volume"] if real_volume else None,
+                real_average_dollar_volume=real_volume["average_dollar_volume"] if real_volume else None,
             )
         )
     return assets
