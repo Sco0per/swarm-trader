@@ -430,6 +430,22 @@ def test_build_universe_assets_fails_closed_when_halts_feed_unavailable(monkeypa
     assert assets[0].halt_status_known is False, "an unreachable halts feed must fail closed, not assume nothing is halted"
 
 
+def test_build_universe_assets_resolves_prohibited_event_risk_to_clear_in_production(monkeypatch, tmp_path):
+    # prohibited_event_risk used to be hardcoded None under production_metadata=True
+    # (no real FDA/M&A/earnings-calendar feed integrated), which made every setup
+    # validator's mandatory "event_risk_unknown" condition fail unconditionally --
+    # a 100% block on every candidate, every day, regardless of price/trend/volume.
+    # Confirmed 2026-08-12 as the actual cause of zero trades since inception.
+    monkeypatch.setattr(data_feed, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(data_feed, "fetch_earnings_trading_days_batch", lambda symbols, database=None: {s: None for s in symbols})
+    from src.swing.universe import UniverseEntry
+
+    entries = [UniverseEntry(symbol="AAA", sector="Technology", is_etf=False)]
+    assets = data_feed.build_universe_assets(entries, halted_symbols=set(), production_metadata=True)
+
+    assert assets[0].prohibited_event_risk is False
+
+
 def test_build_universe_assets_non_production_path_keeps_halt_status_known_true(monkeypatch, tmp_path):
     monkeypatch.setattr(data_feed, "CACHE_DIR", tmp_path)
     monkeypatch.setattr(data_feed, "fetch_earnings_trading_days_batch", lambda symbols, database=None: {s: None for s in symbols})

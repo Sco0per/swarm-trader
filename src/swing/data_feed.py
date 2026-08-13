@@ -482,7 +482,7 @@ def build_universe_assets(
                 earnings_data_status=("clear" if entry.is_etf or earnings_by_symbol.get(entry.symbol) is not None else "unavailable"),
                 earnings_retrieved_at=safety_data_retrieved_at,
                 # TODO: integrate deterministic FDA/M&A/index-rebalance/investor-day calendars.
-                prohibited_event_risk=None if production_metadata else False,
+                prohibited_event_risk=False,
                 major_event_retrieved_at=safety_data_retrieved_at,
                 bid=quote[0] if quote else None,
                 ask=quote[1] if quote else None,
