@@ -213,6 +213,12 @@ def test_run_with_no_proposals_notifies_no_trade_found(monkeypatch, tmp_path, ca
         backend=_StubBackend(),
         telegram_channel=fake_channel,
     )
+    # `run` only writes the notification row -- delivery is exclusively the
+    # explicit drain-notifications command's job now (see cli.py's
+    # _finalize_notifications_best_effort), matching how the real GitHub
+    # Actions relay drains notifications separately from the sandboxed runs.
+    monkeypatch.setattr("sys.argv", ["swing-trader", "drain-notifications"])
+    cli_module.main()
     assert any("No trade found" in message for message in fake_channel.sent)
 
 
@@ -235,6 +241,12 @@ def test_run_with_submitted_trade_notifies_trade_entered(monkeypatch, tmp_path, 
         telegram_channel=fake_channel,
     )
     submitted_ticker = next(decision["ticker"] for decision in payload["decisions"] if decision["status"] == "SUBMITTED")
+    # `run` only writes the notification row -- delivery is exclusively the
+    # explicit drain-notifications command's job now (see cli.py's
+    # _finalize_notifications_best_effort), matching how the real GitHub
+    # Actions relay drains notifications separately from the sandboxed runs.
+    monkeypatch.setattr("sys.argv", ["swing-trader", "drain-notifications"])
+    cli_module.main()
     assert any("Trade entered" in message and submitted_ticker in message for message in fake_channel.sent)
 
 

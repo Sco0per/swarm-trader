@@ -578,13 +578,23 @@ def _finalize_notifications_best_effort(
     command: list[str] | None = None,
     traceback_text: str | None = None,
 ) -> None:
-    """Emit a RUN_FAILED event (if applicable) and drain pending deliveries.
+    """Emit a RUN_FAILED event, if applicable. Never raises or prints -- a
+    notification-delivery problem is not a trading-pipeline problem.
 
-    Runs after every command, not just `run`, and must never raise or print
-    -- a notification-delivery problem is not a trading-pipeline problem.
+    Deliberately does NOT call drain_pending_notifications: this runs after
+    every command from inside the scheduled cloud routines' sandbox, whose
+    network egress blocks api.telegram.org, so any delivery attempt made
+    here is guaranteed to fail. It used to attempt one anyway, which burned
+    through the same delivery_attempts budget the GitHub Actions relay
+    (.github/workflows/deliver-telegram-notifications.yml, the only channel
+    that can actually reach Telegram) depends on -- rows were hitting
+    MAX_DELIVERY_ATTEMPTS and being abandoned before the relay, which fires
+    far less often than its every-15-minutes cron implies under GitHub's
+    scheduling delays, ever got a real shot at them. Delivery is exclusively
+    the relay's job now; this only ever writes the RUN_FAILED row.
     """
     try:
-        settings, database = _database()
+        _, database = _database()
         if error_text is not None:
             NotificationService(database).emit(
                 NotificationType.RUN_FAILED,
@@ -597,7 +607,6 @@ def _finalize_notifications_best_effort(
                     "traceback": traceback_text or "",
                 },
             )
-        drain_pending_notifications(database, _channel_if_configured(settings))
     except Exception:
         pass
 
