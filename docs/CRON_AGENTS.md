@@ -37,20 +37,22 @@ falls back to the original local SQLite file, so local dev and the test
 suite are completely unaffected. Every `swing-trader` command now reads and
 writes the hosted database directly and in real time — there is no
 end-of-run save step, and therefore nothing for a routine to git-push at
-all. `turso_serverless` (the Python client) is a DB-API 2.0 driver
-deliberately built sqlite3-compatible: `?`-style parameters, `Row` supports
-column-name access the same way `sqlite3.Row` does, `IntegrityError` is
-raised on constraint violations, `executescript()` commits any pending
-transaction first — verified by installing the package and reading its
-source directly, not just its (incomplete) hosted docs.
+all. `turso_serverless` (the Python client) is broadly DB-API 2.0 compatible:
+it supports `?`-style parameters, raises `IntegrityError` on constraint
+violations, and commits pending work before `executescript()`. Its returned
+rows are **not** fully compatible with `sqlite3.Row`, however: string-key
+access and `dict(row)`/`.keys()` are not reliable. Database code must convert
+driver rows through `SwingDatabase._row_to_dict()` before named access. This
+distinction is covered by fake-tuple-driver regression tests.
 
 Turso's free tier (5GB storage, 500M row reads/month, 10M row writes/month)
 is far beyond what this system needs — a handful of routine runs a day, each
 doing lightweight reads/writes, is nowhere close to those limits.
 
-## The seven narrow routines
+## The eight scheduled routines
 
-Each routine runs exactly one `swing-trader` subcommand. None of them touch
+The first seven routines each run exactly one `swing-trader` subcommand. The
+eighth is a tightly bounded crash watchdog described below. None of them touch
 the Robinhood live-trading path (`live-ticket`, `record-live-fill`,
 `record-live-exit`) — those remain human-only per `docs/ROBINHOOD_MCP.md`,
 and Robinhood's MCP connector must never be attached to any of these
@@ -70,6 +72,7 @@ The environment keys below make every time configurable without changing code.
 | 5 | position-health-agent | `SCHEDULE_POSITION_HEALTH_ET=15:45` weekdays | `reconcile` | paper broker + Turso; no candidate LLM |
 | 6 | daily-report-agent | `SCHEDULE_DAILY_REPORT_ET=16:15` weekdays | `report daily` | Turso only |
 | 7 | weekly-lessons-agent | `SCHEDULE_WEEKLY_LESSONS_ET=Sunday 18:00` | `review-observations` | Turso only |
+| 8 | crash-watchdog-agent | every 30 minutes (`*/30 * * * *`) | `watchdog-check`, then at most one bounded repair attempt and `watchdog-resolve` | Turso + repository read/write + GitHub MCP |
 
 Each agent prompt is generated from `src/swing/scheduling.py`. It permits its
 single listed subcommand and explicitly forbids every other shell command and
@@ -85,12 +88,76 @@ set to `true` in the cloud environment, `decide-trade-agent` will compute and
 log full proposals every day but submit nothing — a rehearsal period before
 real (paper) orders go out. Flip it on when you're satisfied watching it.
 
-All seven routines run their orchestration on a cheap fixed-command model — each
-one just runs a fixed CLI command and reports the output, no real reasoning
-required. The actual trading intelligence is a separate set of Anthropic API
-calls the Python code makes directly (`src/swing/llm_backend.py`, governed by
-`MODEL_FALLBACK`/`ANALYST_MODEL`/etc.), billed and configured independently
-of the routine's own model.
+The seven fixed-command routines run their orchestration on a cheap model: each
+one just runs a fixed CLI command and reports the output, so no real reasoning
+is required. The watchdog needs a code-capable model because it investigates a
+failure and may prepare a small patch. The actual trading intelligence remains
+a separate set of Anthropic API calls the Python code makes directly
+(`src/swing/llm_backend.py`, governed by
+`MODEL_FALLBACK`/`ANALYST_MODEL`/etc.), billed and configured independently of
+the routine's own model.
+
+## Crash-watchdog routine
+
+`crash-watchdog-agent` checks every 30 minutes for durable `RUN_FAILED`
+notifications newer than the `watchdog_last_notification_id` watermark. It
+must begin with the read-only `swing-trader watchdog-check`. An empty result is
+a successful no-op. It deliberately ignores other critical notification types,
+including `KILL_SWITCH_ACTIVATED`: a safety mechanism firing correctly is not a
+software crash and must never be auto-resolved.
+
+For each returned incident, the routine may investigate and make **one** repair
+attempt. Direct auto-push to `main` is allowed only when every mechanical-fix
+condition below is satisfied:
+
+- The root cause is the established Turso row-conversion bug: tuple rows are
+  accessed by string key, passed to `dict(row)`, or treated as if `.keys()` is
+  available. Typical errors include `TypeError: tuple indices must be integers
+  or slices, not str` and the corresponding missing-`.keys()` failure.
+- The diff touches only `src/swing/database.py` and
+  `tests/swing/test_database_row_conversion.py`.
+- The diff is under approximately 40 changed lines.
+- A new or extended regression test using the existing fake-tuple-driver
+  pattern (`_FakeConnection`/`_RoutedFakeConnection`) reproduces the crash and
+  proves the conversion fix.
+- The complete `pytest` suite passes.
+
+If any condition is not met, the routine may create a branch and open a PR but
+must not update `main`. `WATCHDOG_AUTO_PUSH_ENABLED` defaults to `false`, and
+while it is false even a fully mechanical fix is PR-only. Enable it only after
+a one-off test incident has produced a high-quality PR that was reviewed by a
+human.
+
+The routine uses the platform-provided per-session GitHub MCP tools for small
+text writes. Plain `git push` from a routine sandbox is known to fail with 403.
+Create it with `allowed_tools: [Bash, Read, Grep, Glob, Edit, Write]` and
+`clear_mcp_connections: true`; the latter prevents any user-connected broker
+or other connector from being attached automatically. The GitHub write tools
+are platform-provided and remain available independently.
+
+Hard guardrails:
+
+- Never edit `risk.py`, `execution.py`, `strategy.py`, `config.py`, or any
+  broker/order-submission file.
+- Never run `run`, `live-ticket`, `record-live-fill`, `record-live-exit`,
+  `kill-switch`, `clear-drawdown-halt`, `clear-loss-streak-halt`, or
+  `approve-strategy`.
+- Never make more than one fix attempt for an incident or retry a failed command
+  in a loop.
+- After a fix is actually available on the tested branch (or has landed), rerun
+  only the exact failed `swing-trader` command, once.
+- Finish every handled incident with `swing-trader watchdog-resolve <id>
+  --outcome {auto_fixed,pr_opened,unresolved} --summary "..."`. This advances
+  the watermark and emits `AUTO_FIX_RESULT` through the existing notification
+  relay.
+
+Rollout is safety-gated: create the routine initially as a distant
+`run_once_at`, with `WATCHDOG_AUTO_PUSH_ENABLED=false`, rather than enabling the
+live cron. On a throwaway branch, reproduce the known Turso tuple-row crash,
+trigger one run, and review the PR, regression test, single-command rerun, and
+`AUTO_FIX_RESULT` record by hand. Only after this end-to-end trial passes should
+the routine be switched to `*/30 * * * *`; enabling direct auto-push is a
+separate later decision.
 
 ## Known limitations
 
