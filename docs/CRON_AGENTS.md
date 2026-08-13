@@ -106,6 +106,11 @@ a successful no-op. It deliberately ignores other critical notification types,
 including `KILL_SWITCH_ACTIVATED`: a safety mechanism firing correctly is not a
 software crash and must never be auto-resolved.
 
+Each `RUN_FAILED` payload includes the redacted CLI argument list and redacted
+traceback as well as the exception text. These fields are the watchdog's source
+of truth for the failed command and investigation; it must never infer a command
+from the generic notification title.
+
 For each returned incident, the routine may investigate and make **one** repair
 attempt. Direct auto-push to `main` is allowed only when every mechanical-fix
 condition below is satisfied:

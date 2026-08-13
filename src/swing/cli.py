@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -36,7 +37,7 @@ from .postmortem import PostmortemEngine
 from .reconciliation import BrokerReconciler
 from .reporting import ReportingService
 from .risk import SwingRiskManager
-from .security import redact_text
+from .security import redact_sensitive, redact_text
 from .stops import ProtectedStopService
 
 
@@ -557,18 +558,26 @@ def _run() -> int:
 def main() -> int:
     """Run the CLI without exposing local variables or credential-bearing tracebacks."""
 
+    command = list(sys.argv[1:])
     try:
         exit_code = _run()
         error_text = None
+        traceback_text = None
     except Exception as exc:
         error_text = redact_text(exc)
+        traceback_text = redact_text(traceback.format_exc())
         print(json.dumps({"status": "ERROR", "error": error_text}), file=sys.stderr)
         exit_code = 2
-    _finalize_notifications_best_effort(error_text)
+    _finalize_notifications_best_effort(error_text, command=command, traceback_text=traceback_text)
     return exit_code
 
 
-def _finalize_notifications_best_effort(error_text: str | None) -> None:
+def _finalize_notifications_best_effort(
+    error_text: str | None,
+    *,
+    command: list[str] | None = None,
+    traceback_text: str | None = None,
+) -> None:
     """Emit a RUN_FAILED event (if applicable) and drain pending deliveries.
 
     Runs after every command, not just `run`, and must never raise or print
@@ -582,7 +591,11 @@ def _finalize_notifications_best_effort(error_text: str | None) -> None:
                 severity="CRITICAL",
                 title="Swing CLI run failed",
                 reason_code="RUN_EXCEPTION",
-                payload={"error": error_text},
+                payload={
+                    "error": error_text,
+                    "command": redact_sensitive(command or []),
+                    "traceback": traceback_text or "",
+                },
             )
         drain_pending_notifications(database, _channel_if_configured(settings))
     except Exception:

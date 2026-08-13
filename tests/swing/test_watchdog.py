@@ -74,3 +74,22 @@ def test_watchdog_check_only_sees_failures_after_the_watermark(monkeypatch, tmp_
     assert result["since_id"] == first_id
     assert result["count"] == 1
     assert "second" in result["failures"][0]["payload_json"]
+
+
+def test_run_failed_notification_includes_redacted_command_and_traceback(monkeypatch, database):
+    settings = object()
+    monkeypatch.setattr(cli_module, "_database", lambda: (settings, database))
+    monkeypatch.setattr(cli_module, "_channel_if_configured", lambda _settings: None)
+    monkeypatch.setattr(cli_module, "drain_pending_notifications", lambda _database, _channel: None)
+
+    cli_module._finalize_notifications_best_effort(
+        "tuple indices must be integers or slices, not str",
+        command=["report", "daily", "--api-key=sk-ant-supersecret123456"],
+        traceback_text='Traceback (most recent call last):\n  File "database.py", line 1',
+    )
+
+    failure = database.unresolved_run_failures()[0]
+    payload = json.loads(failure["payload_json"])
+    assert payload["command"][:2] == ["report", "daily"]
+    assert "supersecret" not in payload["command"][2]
+    assert "database.py" in payload["traceback"]
