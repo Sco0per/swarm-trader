@@ -805,8 +805,11 @@ class SwingDatabase:
 
     def get_state(self, key: str, default: Any = None) -> Any:
         with self.connect() as connection:
-            row = connection.execute("SELECT value_json FROM system_state WHERE key=?", (key,)).fetchone()
-        return json.loads(row["value_json"]) if row else default
+            cursor = connection.execute("SELECT value_json FROM system_state WHERE key=?", (key,))
+            row = cursor.fetchone()
+            if row is None:
+                return default
+            return json.loads(_row_to_dict(cursor, row)["value_json"])
 
     def get_earnings_cache_many(self, symbols: list[str], ttl_seconds: int) -> dict[str, int | None]:
         """Bulk-read fresh earnings-lookup cache entries, hosted so they survive across routine runs.
@@ -821,10 +824,11 @@ class SwingDatabase:
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)).isoformat()
         placeholders = ",".join("?" for _ in symbols)
         with self.connect() as connection:
-            rows = connection.execute(
+            cursor = connection.execute(
                 f"SELECT symbol, trading_days FROM earnings_cache WHERE updated_at >= ? AND symbol IN ({placeholders})",
                 (cutoff, *symbols),
-            ).fetchall()
+            )
+            rows = [_row_to_dict(cursor, row) for row in cursor.fetchall()]
         return {row["symbol"]: (int(row["trading_days"]) if row["trading_days"] is not None else None) for row in rows}
 
     def set_earnings_cache_many(self, entries: list[tuple[str, int | None]]) -> None:
@@ -1325,10 +1329,11 @@ class SwingDatabase:
             connection.execute("BEGIN IMMEDIATE")
             if connection.execute("SELECT 1 FROM entry_admissions WHERE intent_id=?", (intent_id,)).fetchone():
                 return False, "duplicate_intent", "Intent already has an admission record"
-            active = connection.execute(
+            active_cursor = connection.execute(
                 """SELECT ticker, planned_dollar_risk, created_at, payload_json FROM entry_admissions
                    WHERE trade_id IS NULL AND status IN ('PENDING','UNKNOWN')"""
-            ).fetchall()
+            )
+            active = [_row_to_dict(active_cursor, row) for row in active_cursor.fetchall()]
             today_trades = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM trades WHERE entry_datetime >= ? AND status NOT IN ('REJECTED','CANCELED')",
@@ -1347,7 +1352,8 @@ class SwingDatabase:
                 return False, "daily_entry_limit", "Serialized daily entry limit reached"
             if week_trades + pending_week >= max_week:
                 return False, "weekly_entry_limit", "Serialized weekly entry limit reached"
-            open_rows = connection.execute("SELECT ticker, planned_dollar_risk FROM trades WHERE status IN ('SUBMITTED','OPEN','PARTIALLY_FILLED')").fetchall()
+            open_rows_cursor = connection.execute("SELECT ticker, planned_dollar_risk FROM trades WHERE status IN ('SUBMITTED','OPEN','PARTIALLY_FILLED')")
+            open_rows = [_row_to_dict(open_rows_cursor, row) for row in open_rows_cursor.fetchall()]
             estimated_symbols = set(broker_position_symbols)
             estimated_symbols.update(str(row["ticker"]).upper() for row in open_rows)
             estimated_symbols.update(str(row["ticker"]).upper() for row in active)
@@ -1357,7 +1363,8 @@ class SwingDatabase:
             reserved_risk = sum(float(row["planned_dollar_risk"] or 0) for row in active)
             if existing_open_risk + reserved_risk + planned_dollar_risk > account_equity * max_open_risk_pct + 1e-9:
                 return False, "max_combined_open_risk", "Serialized combined open-risk limit reached"
-            open_context = connection.execute("SELECT ticker,sector,planned_dollar_risk FROM trades WHERE status IN ('SUBMITTED','OPEN','PARTIALLY_FILLED')").fetchall()
+            open_context_cursor = connection.execute("SELECT ticker,sector,planned_dollar_risk FROM trades WHERE status IN ('SUBMITTED','OPEN','PARTIALLY_FILLED')")
+            open_context = [_row_to_dict(open_context_cursor, row) for row in open_context_cursor.fetchall()]
             existing_sector_risk = sum(float(row["planned_dollar_risk"] or 0) for row in open_context if str(row["sector"] or "UNKNOWN") == sector)
             existing_cluster_risk = 0.0
             for row in open_context:
@@ -1365,7 +1372,7 @@ class SwingDatabase:
                     existing_cluster_risk += float(row["planned_dollar_risk"] or 0)
             for row in active:
                 try:
-                    active_payload = json.loads(row["payload_json"]) if "payload_json" in row.keys() else {}
+                    active_payload = json.loads(row["payload_json"]) if "payload_json" in row else {}
                 except (TypeError, ValueError):
                     return False, "broker_mismatch", "Malformed active-admission risk context"
                 active_candidate = active_payload.get("candidate", {})
@@ -1525,8 +1532,9 @@ class SwingDatabase:
 
     def get_trade_thesis(self, trade_id: str) -> TradeThesis | None:
         with self.connect() as connection:
-            row = connection.execute("SELECT thesis_json FROM trade_theses WHERE trade_id=?", (trade_id,)).fetchone()
-        return TradeThesis.model_validate_json(row["thesis_json"]) if row else None
+            cursor = connection.execute("SELECT thesis_json FROM trade_theses WHERE trade_id=?", (trade_id,))
+            row = cursor.fetchone()
+        return TradeThesis.model_validate_json(_row_to_dict(cursor, row)["thesis_json"]) if row else None
 
     def overwrite_trade_thesis(self, trade_id: str, thesis: TradeThesis) -> None:
         """Explicitly exposed so callers/tests receive the storage-layer immutable failure."""
@@ -1703,13 +1711,13 @@ class SwingDatabase:
             row = cursor.fetchone()
             if row is None:
                 raise ValueError("No unused deterministic live-ticket approval exists for this decision")
-            if str(row["expires_at"]) < now:
+            result = _row_to_dict(cursor, row)
+            if str(result["expires_at"]) < now:
                 raise ValueError("Live-ticket approval expired; re-run every deterministic gate")
             connection.execute(
                 "UPDATE live_ticket_approvals SET consumed_at=? WHERE decision_id=? AND consumed_at IS NULL",
                 (now, decision_id),
             )
-            result = _row_to_dict(cursor, row)
         for field in ("candidate_json", "proposal_json", "risk_json"):
             result[field] = json.loads(result[field])
         return result
@@ -1729,9 +1737,11 @@ class SwingDatabase:
         if quantity <= 0 or price <= 0:
             raise ValueError("Entry fill quantity and price must be positive")
         with self.connect() as connection:
-            trade = connection.execute("SELECT status,initial_stop FROM trades WHERE trade_id=?", (trade_id,)).fetchone()
-            if not trade:
+            trade_cursor = connection.execute("SELECT status,initial_stop FROM trades WHERE trade_id=?", (trade_id,))
+            trade_row = trade_cursor.fetchone()
+            if not trade_row:
                 raise KeyError(trade_id)
+            trade = _row_to_dict(trade_cursor, trade_row)
             if trade["status"] == "CLOSED":
                 raise ValueError("Cannot add an entry fill to a closed trade")
             exit_count = connection.execute("SELECT COUNT(*) FROM trade_fills WHERE trade_id=? AND side='EXIT'", (trade_id,)).fetchone()[0]
@@ -1751,11 +1761,12 @@ class SwingDatabase:
                     _json(payload or {}),
                 ),
             )
-            totals = connection.execute(
+            totals_cursor = connection.execute(
                 """SELECT SUM(quantity) AS quantity,SUM(quantity*price) AS cost
                    FROM trade_fills WHERE trade_id=? AND side='ENTRY'""",
                 (trade_id,),
-            ).fetchone()
+            )
+            totals = _row_to_dict(totals_cursor, totals_cursor.fetchone())
             total_quantity = float(totals["quantity"] or 0)
             total_cost = float(totals["cost"] or 0)
             average_entry = total_cost / total_quantity
@@ -1850,13 +1861,15 @@ class SwingDatabase:
 
     def trade_price_extremes(self, trade_id: str, fallback: float) -> tuple[float, float]:
         with self.connect() as connection:
-            row = connection.execute(
+            cursor = connection.execute(
                 "SELECT MAX(COALESCE(high,price)) AS high, MIN(COALESCE(low,price)) AS low FROM trade_snapshots WHERE trade_id=?",
                 (trade_id,),
-            ).fetchone()
+            )
+            row = cursor.fetchone()
+            extremes = _row_to_dict(cursor, row) if row else {}
         return (
-            float(row["high"]) if row and row["high"] is not None else fallback,
-            float(row["low"]) if row and row["low"] is not None else fallback,
+            float(extremes["high"]) if extremes.get("high") is not None else fallback,
+            float(extremes["low"]) if extremes.get("low") is not None else fallback,
         )
 
     def get_trade(self, trade_id: str) -> dict[str, Any] | None:
@@ -1877,12 +1890,14 @@ class SwingDatabase:
 
     def new_position_count(self, start_iso: str) -> int:
         with self.connect() as connection:
-            row = connection.execute("SELECT COUNT(*) AS n FROM trades WHERE entry_datetime >= ? AND status NOT IN ('REJECTED','CANCELED')", (start_iso,)).fetchone()
-        return int(row["n"])
+            cursor = connection.execute("SELECT COUNT(*) AS n FROM trades WHERE entry_datetime >= ? AND status NOT IN ('REJECTED','CANCELED')", (start_iso,))
+            row = cursor.fetchone()
+        return int(_row_to_dict(cursor, row)["n"])
 
     def consecutive_losses(self) -> int:
         with self.connect() as connection:
-            rows = connection.execute("SELECT realized_pnl FROM trades WHERE status='CLOSED' AND realized_pnl IS NOT NULL ORDER BY exit_datetime DESC LIMIT 100").fetchall()
+            cursor = connection.execute("SELECT realized_pnl FROM trades WHERE status='CLOSED' AND realized_pnl IS NOT NULL ORDER BY exit_datetime DESC LIMIT 100")
+            rows = [_row_to_dict(cursor, row) for row in cursor.fetchall()]
         count = 0
         for row in rows:
             if float(row["realized_pnl"]) < 0:
@@ -1921,13 +1936,17 @@ class SwingDatabase:
 
     def equity_high(self, fallback: float) -> float:
         with self.connect() as connection:
-            row = connection.execute("SELECT MAX(equity) AS high FROM equity_snapshots").fetchone()
-        return float(row["high"]) if row and row["high"] is not None else fallback
+            cursor = connection.execute("SELECT MAX(equity) AS high FROM equity_snapshots")
+            row = cursor.fetchone()
+            high = _row_to_dict(cursor, row)["high"] if row else None
+        return float(high) if high is not None else fallback
 
     def equity_high_since(self, start_iso: str, fallback: float) -> float:
         with self.connect() as connection:
-            row = connection.execute("SELECT MAX(equity) AS high FROM equity_snapshots WHERE observed_at >= ?", (start_iso,)).fetchone()
-        return float(row["high"]) if row and row["high"] is not None else fallback
+            cursor = connection.execute("SELECT MAX(equity) AS high FROM equity_snapshots WHERE observed_at >= ?", (start_iso,))
+            row = cursor.fetchone()
+            high = _row_to_dict(cursor, row)["high"] if row else None
+        return float(high) if high is not None else fallback
 
     def record_postmortem(self, postmortem_id: str, record: PostmortemRecord, model_name: str | None = None) -> None:
         answers = record.model_dump(mode="json", exclude={"evidence"})
@@ -2115,9 +2134,11 @@ class SwingDatabase:
             "RETIRED": set(),
         }
         with self.connect() as connection:
-            row = connection.execute("SELECT status,sample_size FROM lessons WHERE lesson_id=?", (lesson_id,)).fetchone()
+            cursor = connection.execute("SELECT status,sample_size FROM lessons WHERE lesson_id=?", (lesson_id,))
+            row = cursor.fetchone()
             if not row:
                 raise KeyError(lesson_id)
+            row = _row_to_dict(cursor, row)
             if new_status not in allowed[row["status"]]:
                 raise ValueError(f"Invalid lesson transition {row['status']} -> {new_status}")
             if new_status == "VALIDATED" and (not approved_by or int(row["sample_size"]) < 2):
@@ -2212,14 +2233,18 @@ class SwingDatabase:
         if not approved_by.strip():
             raise ValueError("approved_by is required")
         with self.connect() as connection:
-            hypothesis = connection.execute("SELECT * FROM hypotheses WHERE hypothesis_id=?", (hypothesis_id,)).fetchone()
+            hypothesis_cursor = connection.execute("SELECT * FROM hypotheses WHERE hypothesis_id=?", (hypothesis_id,))
+            hypothesis = hypothesis_cursor.fetchone()
             if not hypothesis:
                 raise KeyError(hypothesis_id)
+            hypothesis = _row_to_dict(hypothesis_cursor, hypothesis)
             if int(hypothesis["supporting_sample_size"]) < 30:
                 raise ValueError("At least 30 supporting observations are required for production approval")
-            backtest = connection.execute("SELECT * FROM backtests WHERE hypothesis_id=? AND accepted=1 ORDER BY created_at DESC LIMIT 1", (hypothesis_id,)).fetchone()
+            backtest_cursor = connection.execute("SELECT * FROM backtests WHERE hypothesis_id=? AND accepted=1 ORDER BY created_at DESC LIMIT 1", (hypothesis_id,))
+            backtest = backtest_cursor.fetchone()
             if not backtest:
                 raise ValueError("No accepted out-of-sample backtest supports this hypothesis")
+            backtest = _row_to_dict(backtest_cursor, backtest)
             version = hypothesis["candidate_strategy_version"]
             if not version:
                 raise ValueError("Hypothesis has no candidate strategy version")
