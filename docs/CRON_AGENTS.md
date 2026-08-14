@@ -197,33 +197,69 @@ for either but is unbuilt. Instead, this routine uses the **Robinhood MCP
 connector** already available to Claude Code sessions on this account: a
 scheduled routine created with that connector intentionally still attached
 (not cleared) can call `mcp__Robinhood_agent__get_equity_historicals`
-directly and unattended — confirmed with two live test routines on
-2026-08-13, including a realistic 10-symbol batch mixing large-caps and two
-sector ETFs (`XLK`, `SPY`), all returning clean real volume with no
-permission prompt and no gaps.
+directly and unattended — confirmed across five supervised test fires on
+2026-08-13, with no permission prompt and no data gaps.
 
-The routine, once daily on weekday mornings before `initial-scan-agent`:
+The routine, once daily on weekday mornings before `initial-scan-agent`,
+refreshes a rotating 1/4 shard of the universe rather than the whole thing
+each run — sized against `REAL_VOLUME_CACHE_TTL_SECONDS` (4 days, below), so
+every symbol still gets refreshed comfortably inside its staleness window:
 
-1. Calls `get_equity_historicals` for the scan universe in batches of up to
-   10 symbols (the tool's documented per-call limit), `interval=day`, a
+1. Computes today's shard as `day-of-year % 4` over the universe's
+   deterministic order (`config/universe/us_liquid_2026-08-11.csv`, ~439
+   symbols → ~110/shard), then splits that shard into batches of at most 4
+   symbols and calls `get_equity_historicals` per batch, `interval=day`, a
    ~30-day window.
-2. For each symbol, computes the same 20-day mean-volume and mean-dollar-
-   volume `market.py` already computes from bars (`tail(20).mean()` of
-   `volume` and `close * volume` respectively) — same formula, real input.
-3. Writes the result as one JSON file and calls `swing-trader
-   update-volume-cache <file>`, which upserts `real_volume_cache` (schema:
+2. Per batch, extracts only `(volume, close_price)` for each symbol's last 20
+   bars into a compact line-per-symbol format (not the full raw response) and
+   computes the same 20-day mean-volume and mean-dollar-volume `market.py`
+   already computes from bars (`tail(20).mean()` of `volume` and
+   `close * volume` respectively) — same formula, real input, skipping any
+   symbol with fewer than 10 bars.
+3. Calls `swing-trader update-volume-cache <file>` immediately after each
+   batch (not once at the end), which upserts `real_volume_cache` (schema:
    `symbol`, `average_volume`, `average_dollar_volume`, `updated_at`) via
-   `SwingDatabase.set_volume_cache_many()`.
+   `SwingDatabase.set_volume_cache_many()` — each batch's rows are durable
+   before the next batch starts.
+
+This design replaced an earlier one that transcribed each batch's full raw
+Robinhood JSON response via the `Write` tool and accumulated all batches into
+one file before a single end-of-run cache call: that approach measured at
+roughly 60-90s/batch (dominated by re-emitting the full raw JSON as output
+tokens) and would have taken an estimated ~2.75 hours to cover the full
+439-symbol universe in one run, not viable for a routine meant to fire once
+before market open. The shard-plus-compact-extraction redesign, tested
+end-to-end on 2026-08-13 (`RemoteTrigger` session
+`cse_013SR8CRqtGiLsnn7jjShDsw`), completed a full 110-symbol shard in 28
+batches in **1217 seconds (~20 minutes)**: 108/110 symbols cached
+successfully, 2 (`MMC`, `BK`) reproducibly returned `not_found` from the
+Robinhood API across multiple test fires (skipped, not a mechanism failure —
+worth an occasional manual glance, not yet root-caused). The per-batch
+guardrail (below) never triggered at this batch size.
+
+Two robustness gaps surfaced during testing, worth knowing about before
+trusting this fully unattended, though neither broke the mechanism itself:
+the sandbox draws from a Claude usage quota shared across the whole account,
+not a per-routine budget, so a heavy-usage day could truncate a run
+mid-shard (degrades that day's cache freshness for the untouched symbols,
+falls back safely per below, not a crash); and a test agent once ran its own
+extra git-ancestry checks before the prompt's own `git pull` step, saw a
+not-yet-pulled sandbox clone's stale local ref, and incorrectly concluded the
+feature might not really be on `origin/main` — independently verified false
+(`gh api` confirmed the referenced commit is genuinely on GitHub). If a
+future run reports something looking like tampering or a missing feature,
+check GitHub directly before trusting that conclusion.
 
 `build_universe_assets()` in `data_feed.py` reads that cache
 (`get_volume_cache_many`, TTL `data_feed.REAL_VOLUME_CACHE_TTL_SECONDS`, 4
-days — generous enough to survive a weekend or one missed run) and threads
-`real_average_volume`/`real_average_dollar_volume` onto each `UniverseAsset`.
-`market.py`'s liquidity check and `_candidate()` both prefer these fields
-over the Alpaca-bar-derived estimate when fresh, and fall back to the
-original (understated but non-fatal) computation when a symbol's cache entry
-is missing or stale — this routine failing or lagging degrades accuracy, not
-safety.
+days — sized specifically so the 1/4-shard rotation keeps every symbol
+inside its staleness window even after a weekend or one missed run) and
+threads `real_average_volume`/`real_average_dollar_volume` onto each
+`UniverseAsset`. `market.py`'s liquidity check and `_candidate()` both prefer
+these fields over the Alpaca-bar-derived estimate when fresh, and fall back
+to the original (understated but non-fatal) computation when a symbol's
+cache entry is missing or stale — this routine failing or lagging degrades
+accuracy, not safety.
 
 Guardrails, same spirit as the other eight:
 
