@@ -227,7 +227,7 @@ class SwingSettings:
     broker_min_quantity: int = 1
 
     minimum_rr: float = 2.0
-    buy_score_threshold: float = 80.0
+    buy_score_threshold: float = 70.0
     preferred_score_threshold: float = 85.0
     a_plus_score_threshold: float = 90.0
     minimum_price: float = 5.0
@@ -235,7 +235,7 @@ class SwingSettings:
     minimum_average_dollar_volume: float = 20_000_000
     minimum_history_sessions: int = 160
     maximum_spread_pct: float = 0.005
-    borderline_score_threshold: float = 70.0
+    borderline_score_threshold: float = 60.0
     neutral_score_threshold_addition: float = 5.0
     choppy_score_threshold_addition: float = 10.0
     hostile_score_threshold_addition: float = 20.0
@@ -344,8 +344,8 @@ class SwingSettings:
             raise ValueError("MAXIMUM_ADV_FRACTION may not exceed the immutable 1.00% ceiling")
         if self.broker_min_quantity != 1:
             raise ValueError("BROKER_MIN_QUANTITY is immutable at one whole share")
-        if self.buy_score_threshold < 80 or not (self.buy_score_threshold <= self.preferred_score_threshold <= self.a_plus_score_threshold <= 100):
-            raise ValueError("Score thresholds must be ordered and BUY_SCORE_THRESHOLD cannot be below 80")
+        if self.buy_score_threshold < 70 or not (self.buy_score_threshold <= self.preferred_score_threshold <= self.a_plus_score_threshold <= 100):
+            raise ValueError("Score thresholds must be ordered and BUY_SCORE_THRESHOLD cannot be below 70")
         if not (0 <= self.borderline_score_threshold < self.buy_score_threshold):
             raise ValueError("BORDERLINE_SCORE_THRESHOLD must be below BUY_SCORE_THRESHOLD")
         if self.minimum_rr < 2.0:
@@ -409,7 +409,7 @@ def load_settings() -> SwingSettings:
         maximum_adv_fraction=_float("MAXIMUM_ADV_FRACTION", 0.001),
         broker_min_quantity=_int("BROKER_MIN_QUANTITY", 1),
         minimum_rr=_float("MINIMUM_RR", 2.0),
-        buy_score_threshold=_float("BUY_SCORE_THRESHOLD", 80.0),
+        buy_score_threshold=_float("BUY_SCORE_THRESHOLD", 70.0),
         preferred_score_threshold=_float("PREFERRED_SCORE_THRESHOLD", 85.0),
         a_plus_score_threshold=_float("A_PLUS_SCORE_THRESHOLD", 90.0),
         minimum_price=_float("MINIMUM_PRICE", 5.0),
@@ -417,7 +417,7 @@ def load_settings() -> SwingSettings:
         minimum_average_dollar_volume=_float("MINIMUM_AVERAGE_DOLLAR_VOLUME", 20_000_000),
         minimum_history_sessions=_int("MINIMUM_HISTORY_SESSIONS", 160),
         maximum_spread_pct=_float("MAXIMUM_SPREAD_PCT", 0.005),
-        borderline_score_threshold=_float("BORDERLINE_SCORE_THRESHOLD", 70.0),
+        borderline_score_threshold=_float("BORDERLINE_SCORE_THRESHOLD", 60.0),
         neutral_score_threshold_addition=_float("NEUTRAL_SCORE_THRESHOLD_ADDITION", 5.0),
         choppy_score_threshold_addition=_float("CHOPPY_SCORE_THRESHOLD_ADDITION", 10.0),
         hostile_score_threshold_addition=_float("HOSTILE_SCORE_THRESHOLD_ADDITION", 20.0),

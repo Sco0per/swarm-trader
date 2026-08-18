@@ -61,7 +61,7 @@ def _add_open_trade(database, settings, candidate, *, ticker="XYZ", broker_order
         ({"normal_risk_pct": 0.0076}, "0.75%"),
         ({"absolute_max_risk_pct": 0.0101}, "1.00%"),
         ({"max_combined_open_risk_pct": 0.0201}, "2.00%"),
-        ({"buy_score_threshold": 79}, "below 80"),
+        ({"buy_score_threshold": 69}, "below 70"),
         ({"max_open_positions": 4}, "one and three"),
         ({"max_new_positions_day": 2}, "one per day"),
         ({"quote_freshness_seconds": 301}, "between 1 and 300"),
