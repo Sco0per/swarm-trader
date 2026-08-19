@@ -54,7 +54,7 @@ _OPENED_STATUSES = {"SUBMITTED"}
 _NEEDS_ATTENTION_STATUSES = {"UNKNOWN_REQUIRES_RECONCILIATION", "UNKNOWN", "HALTED", "PROTECTION_FAILURE_HALTED"}
 
 
-def _emit_run_cycle_summary(database: SwingDatabase, decisions: list[dict], *, candidates_found: int, scan_run_id: str) -> None:
+def _emit_run_cycle_summary(database: SwingDatabase, decisions: list[dict], *, candidates: list[SwingCandidate], scan_run_id: str) -> None:
     opened = [d for d in decisions if d["status"] in _OPENED_STATUSES]
     attention = [d for d in decisions if d["status"] in _NEEDS_ATTENTION_STATUSES]
     if attention:
@@ -71,14 +71,22 @@ def _emit_run_cycle_summary(database: SwingDatabase, decisions: list[dict], *, c
         ]
     else:
         severity, reason_code = "INFO", "NO_TRADE"
-        lines = [f"No trade found ({candidates_found} candidate(s) scanned, {len(decisions)} reviewed, 0 opened)"]
+        lines = [f"No trade found ({len(candidates)} candidate(s) scanned, {len(decisions)} reviewed, 0 opened)"]
+        for candidate in sorted(candidates, key=lambda c: -c.score)[:5]:
+            if candidate.validator_failures:
+                why = f"failed validator: {candidate.validator_failures[0]}"
+            elif candidate.score_route in {"strong", "very_strong"}:
+                why = "reviewed by LLM, no proposal"
+            else:
+                why = f"below strong-candidate bar (route={candidate.score_route})"
+            lines.append(f"{candidate.ticker} ({candidate.setup_type.value}) score={candidate.score:.1f} -- {why}")
     text = "\n".join(lines)
     NotificationService(database).emit(
         NotificationType.RUN_CYCLE_SUMMARY,
         severity=severity,
         title=text.splitlines()[0],
         reason_code=reason_code,
-        payload={"message": text, "decisions": decisions, "candidates_found": candidates_found},
+        payload={"message": text, "decisions": decisions, "candidates_found": len(candidates)},
         dedupe_key=f"run:{scan_run_id}",
     )
 
@@ -399,7 +407,7 @@ def _run() -> int:
                     "planned_account_risk_pct": result.risk.planned_account_risk_pct,
                 }
             )
-        _emit_run_cycle_summary(database, decisions, candidates_found=len(candidates), scan_run_id=scan_run_id)
+        _emit_run_cycle_summary(database, decisions, candidates=candidates, scan_run_id=scan_run_id)
         print(
             json.dumps(
                 {
