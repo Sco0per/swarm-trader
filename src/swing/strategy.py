@@ -236,6 +236,7 @@ def _data_failure(setup_type: SetupType, code: str) -> ValidationResult:
 def validate_trend_pullback(
     bars: pd.DataFrame,
     spy_bars: pd.DataFrame,
+    sector_bars: pd.DataFrame | None,
     *,
     config: StrategySettings,
     minimum_history_sessions: int,
@@ -245,7 +246,7 @@ def validate_trend_pullback(
     liquidity_acceptable: bool,
 ) -> ValidationResult:
     try:
-        context = _build_context(bars, spy_bars, None, config, minimum_history_sessions, as_of)
+        context = _build_context(bars, spy_bars, sector_bars, config, minimum_history_sessions, as_of)
     except _DataFailure as exc:
         return _data_failure(SetupType.TREND_PULLBACK, exc.code)
     recent = context.frame.tail(config.trend_slope_lookback)
@@ -287,6 +288,7 @@ def validate_trend_pullback(
 def validate_breakout_retest(
     bars: pd.DataFrame,
     spy_bars: pd.DataFrame,
+    sector_bars: pd.DataFrame | None,
     *,
     config: StrategySettings,
     minimum_history_sessions: int,
@@ -296,7 +298,7 @@ def validate_breakout_retest(
     liquidity_acceptable: bool,
 ) -> ValidationResult:
     try:
-        context = _build_context(bars, spy_bars, None, config, minimum_history_sessions, as_of)
+        context = _build_context(bars, spy_bars, sector_bars, config, minimum_history_sessions, as_of)
     except _DataFailure as exc:
         return _data_failure(SetupType.BREAKOUT_RETEST, exc.code)
     breakout_window_sessions = config.trend_slope_lookback
@@ -429,6 +431,7 @@ def validate_setup(
         return validate_trend_pullback(
             bars,
             spy_bars,
+            sector_bars,
             config=settings.strategy,
             minimum_history_sessions=settings.minimum_history_sessions,
             minimum_reward_risk=settings.minimum_rr,
@@ -440,6 +443,7 @@ def validate_setup(
         return validate_breakout_retest(
             bars,
             spy_bars,
+            sector_bars,
             config=settings.strategy,
             minimum_history_sessions=settings.minimum_history_sessions,
             minimum_reward_risk=settings.minimum_rr,

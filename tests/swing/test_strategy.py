@@ -73,11 +73,12 @@ def _rs_inputs():
     return bars, spy, sector
 
 
-def _trend_result(settings: SwingSettings, bars=None, spy=None, **changes):
+def _trend_result(settings: SwingSettings, bars=None, spy=None, sector=None, **changes):
     default_bars, default_spy = _trend_inputs()
     return validate_trend_pullback(
         bars if bars is not None else default_bars,
         spy if spy is not None else default_spy,
+        sector,
         config=settings.strategy,
         minimum_history_sessions=settings.minimum_history_sessions,
         minimum_reward_risk=changes.pop("minimum_reward_risk", settings.minimum_rr),
@@ -161,6 +162,7 @@ def test_valid_breakout_retest_passes_and_failed_or_extended_breakouts_fail(sett
         return validate_breakout_retest(
             candidate,
             spy,
+            None,
             config=settings.strategy,
             minimum_history_sessions=settings.minimum_history_sessions,
             minimum_reward_risk=settings.minimum_rr,
